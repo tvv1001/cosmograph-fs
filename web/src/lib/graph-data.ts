@@ -61,6 +61,15 @@ export interface ForceLayoutConfig {
 	chargeStrength: number;
 	linkDistance: number;
 	linkStrength: number;
+	simulationDecay: number;
+	simulationGravity: number;
+	simulationCenter: number;
+	simulationRepulsion: number;
+	simulationRepulsionFromMouse: number;
+	simulationLinkDistanceVariation: [number, number];
+	simulationFriction: number;
+	simulationImpulse: number;
+	manualReheatImpulse: number;
 	velocityDecay: number;
 	alphaDecay: number;
 	alphaMin: number;
@@ -120,8 +129,17 @@ const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
 	chargeStrength: -108,
-	linkDistance: 86,
-	linkStrength: 0.16,
+	linkDistance: 78,
+	linkStrength: 0.2,
+	simulationDecay: 1800,
+	simulationGravity: 0.06,
+	simulationCenter: 0.18,
+	simulationRepulsion: 0.65,
+	simulationRepulsionFromMouse: 0,
+	simulationLinkDistanceVariation: [1, 1.03],
+	simulationFriction: 0.92,
+	simulationImpulse: 0.12,
+	manualReheatImpulse: 0.16,
 	velocityDecay: 0.32,
 	alphaDecay: 0.048,
 	alphaMin: 0.004,
@@ -130,7 +148,7 @@ const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
 	collisionPadding: 9,
 	neighborhoodSpread: 44,
 	focusZoom: 1.75,
-	reheatOnSelect: true,
+	reheatOnSelect: false,
 };
 
 const DEFAULT_VISUAL_CONFIG = {

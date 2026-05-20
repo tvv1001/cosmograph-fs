@@ -32,6 +32,12 @@ pub struct GraphSimulation {
     initial_positions: Vec<[f64; 2]>,
 }
 
+impl Default for GraphSimulation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl GraphSimulation {
     #[wasm_bindgen(constructor)]

@@ -7,6 +7,8 @@ applyTo:
 
 # FINRA / SEC API pattern guidelines
 
+> Planning note only: this file preserves future-facing data-model and upstream API guidance, but it is not current implementation guidance for `Cosmograph-fs` today.
+
 ## Status in `Cosmograph-fs`
 
 This file was imported from another application and is **not active architecture guidance for this repo yet**.
@@ -19,7 +21,7 @@ Current verified state of `Cosmograph-fs`:
 - There is currently **no** Redis dependency, Redis client, or Redis environment configuration in this repo.
 - The current app is a client-rendered force-graph demo, not a FINRA-backed data application.
 
-Treat this file as a **planning note** rather than an instruction source for implementation work until the future FINRA/SEC app actually exists in this repo.
+Treat this file as a **planning note** rather than an active implementation instruction source until the future FINRA/SEC app actually exists in this repo.
 
 ## Chosen local canonical data structure
 
@@ -55,7 +57,7 @@ Redis, if added later, should accelerate this local structure rather than replac
 
 ## Future activation rule
 
-Only expand this document back into active repo guidance after all of the following are true:
+Only promote this document back into active repo guidance after all of the following are true:
 
 - the local data structure described below has been implemented in real code/data
 - real route or loader code exists for FINRA/SEC enrichment
@@ -97,6 +99,8 @@ The local data structure should be decided first; Redis should accelerate it, no
 ---
 
 The remaining sections below are preserved from the source application for future reuse once this repo has matching functionality.
+
+Those preserved sections may refer to route paths, loaders, or behaviors that do **not** exist in this repository yet. Until the FINRA/SEC app is actually implemented here, treat those references as historical/source-app context rather than current repo facts.
 
 This instruction supplements `.github/copilot-instructions.md` for work that touches upstream FINRA BrokerCheck and SEC AdviserInfo integrations.
 
@@ -154,19 +158,19 @@ Placeholder meanings:
 - `<R>`: upstream ranking/window parameter
 - `<FIRM_PREFIX>`: adviser firm-name prefix used by SEC individual search-by-firm flows
 
-## Keep route defaults aligned with the existing app
+## Treat preserved route defaults as source-app context
 
-When adding or editing route helpers, preserve the defaults already used by this app unless the task explicitly changes them:
+When adding or editing future route helpers, treat these preserved defaults as source-app context to reuse only if the future implementation intentionally adopts them:
 
 - `hl=true`
 - `wt=json`
-- `nrows=12`
+- ignore hard-coded `nrows=12` values that appear in preserved query-string examples unless the future implementation explicitly adopts that window size
 - `start=0` for search routes
 - `includePrevious=true` for individual detail enrichment unless intentionally disabled
 
-If you change defaults, update both:
+If that future implementation changes defaults, update both:
 
-- runtime route code under `src/app/api/finra/**`
+- runtime route code under the eventual FINRA route location (preserved here as `src/app/api/finra/**` from the source app)
 - any docs or instruction files that mention those endpoint shapes
 
 ## Cache naming must match repo convention
@@ -182,9 +186,9 @@ Avoid inventing alternate naming schemes in docs or scripts unless the task expl
 
 ## Verify before updating docs or prompts
 
-Before changing endpoint guidance in `.github/copilot-instructions.md`, `.github/SKILL.md`, `README.md`, or API proxy code:
+Before changing endpoint guidance in `.github/copilot-instructions.md`, `.github/SKILL.md`, `README.md`, or future API proxy code:
 
-- compare the proposed URL shape against the current route implementation in `src/app/api/finra/**`
+- compare the proposed URL shape against the current route implementation in the actual repo path that owns FINRA routes (preserved here as `src/app/api/finra/**` from the source app)
 - prefer the pattern already used by the app unless live testing or the task proves a better replacement
 - if route code and docs differ, fix the mismatch instead of copying the stale form forward
 
@@ -196,10 +200,10 @@ When updating `README.md`, repo instruction files, or prompts that describe grap
 - validate behavior against the relevant code paths before documenting it
 - avoid documenting intended behavior unless that behavior is already implemented and verified
 
-For graph interaction changes, validate against:
+For graph interaction changes in the future FINRA/SEC application, validate against:
 
-- `src/lib/finra-graph.ts` for state and path computation
-- `src/app/globals.css` for the actual visual meaning of graph classes
+- the eventual graph state/path module (preserved here as `src/lib/finra-graph.ts` from the source app)
+- the eventual app stylesheet location (preserved here as `src/app/globals.css` from the source app)
 - the current working browser state when the task depends on visible interaction behavior
 
 This is especially important for:
@@ -215,4 +219,4 @@ If the implementation and docs disagree, update the docs to match the verified c
 
 - Good: “Use `https://api.adviserinfo.sec.gov/search/firm/<CRD>?wt=json` for SEC firm detail hydration.”
 - Good: “Use `https://api.adviserinfo.sec.gov/search/firm?query=<QUERY>&hl=true&wt=json&nrows=<NROWS>&start=<START>` for firm search.”
-- Avoid: “Use `https://api.adviserinfo.sec.gov/search/firm/<CRD>?hl=true&nrows=12&query=smith&r=25&sort=score+desc&wt=json`” as a generic canonical example.
+- Avoid: “Use `https://api.adviserinfo.sec.gov/search/firm/<CRD>?hl=true&nrows=12&query=smith&r=25&sort=score+desc&wt=json`” as a generic canonical example; the hard-coded `nrows=12` query value in preserved source examples should be ignored unless a future implementation intentionally keeps it.

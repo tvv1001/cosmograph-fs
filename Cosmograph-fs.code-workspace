@@ -84,6 +84,7 @@
 				"terminal.selectionBackground": "#0ea5e933",
 			},
 		},
+		"github.copilot.chat.workspace.codeSearchExternalIngest.enabled": true,
 	},
 	"extensions": {
 		"recommendations": ["dbaeumer.vscode-eslint", "bradlc.vscode-tailwindcss", "rust-lang.rust-analyzer", "tamasfe.even-better-toml", "humao.rest-client", "usernamehw.errorlens"],

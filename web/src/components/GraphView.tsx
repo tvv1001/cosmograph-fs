@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ForceGraphMethods, ForceGraphProps, LinkObject, NodeObject } from 'react-force-graph-2d';
+import type { CosmographProps, CosmographRef } from '@cosmograph/react';
 
 import {
 	createGraphDataset,
@@ -18,41 +18,55 @@ import {
 	type GraphNode,
 } from '@/lib/graph-data';
 
-type ForceGraphComponentType = React.ComponentType<
-	ForceGraphProps<GraphNode, GraphLink> & {
-		ref?: React.Ref<ForceGraphMethods<GraphNode, GraphLink> | undefined>;
+type CosmographComponentType = React.ComponentType<
+	CosmographProps & {
+		ref?: React.Ref<CosmographRef>;
 	}
 >;
 
-type ChargeForce = {
-	strength: (strength: number | ((node: NodeObject<GraphNode>) => number)) => ChargeForce;
-	distanceMax?: (distance: number) => ChargeForce;
+type CosmographNode = Record<string, unknown> & {
+	id: string;
+	pointIndex: number;
+	label: string;
+	title: string;
+	kind: GraphNode['kind'];
+	degreeHint: number;
+	graphColor: string;
+	graphSize: number;
+	graphLabelWeight: number;
+	x?: number;
+	y?: number;
 };
 
-type LinkForce = {
-	distance: (distance: number | ((link: LinkObject<GraphNode, GraphLink>) => number)) => LinkForce;
-	strength: (strength: number | ((link: LinkObject<GraphNode, GraphLink>) => number)) => LinkForce;
-	iterations?: (iterations: number) => LinkForce;
+type CosmographLink = Record<string, unknown> & {
+	source: string;
+	target: string;
+	sourceIndex: number;
+	targetIndex: number;
+	weight: number;
+	relationship: GraphLink['relationship'];
+	graphColor: string;
+	graphWidth: number;
+	graphStrength: number;
 };
 
-const MIN_NODE_HIT_RADIUS_PX = 14;
-const NODE_HIT_RADIUS_PADDING_PX = 6;
-const MIN_NODE_LABEL_FONT_SIZE_PX = 3.5;
-const NODE_LABEL_FONT_SIZE_PX = 10;
-const NODE_LABEL_PADDING_PX = 4;
+const COSMOGRAPH_FIT_VIEW_PADDING = 0.14;
 
-function getNodeLabelMetrics(node: GraphNode, globalScale: number): { fontSize: number; labelY: number; labelPadding: number } {
-	const fontSize = Math.max(NODE_LABEL_FONT_SIZE_PX / globalScale, MIN_NODE_LABEL_FONT_SIZE_PX);
-	const labelPadding = NODE_LABEL_PADDING_PX / globalScale;
-	const labelY = (node.y ?? 0) - node.size - fontSize;
-
-	return { fontSize, labelY, labelPadding };
+// Pure function to generate a consistent pseudo-random offset based on a string seed (like an ID)
+function getPseudoRandomOffset(seedString: string, range: number): number {
+	let hash = 0;
+	for (let i = 0; i < seedString.length; i++) {
+		hash = (Math.imul(31, hash) + seedString.charCodeAt(i)) | 0;
+	}
+	// Convert hash to a deterministic value between -range and +range
+	return ((Math.abs(hash) % 10000) / 10000 - 0.5) * range * 2;
 }
 
 export default function GraphView() {
 	const dataset = useMemo<GraphDataset>(() => createGraphDataset(), []);
-	const graphRef = useRef<ForceGraphMethods<GraphNode, GraphLink> | undefined>(undefined);
-	const [ForceGraphCanvas, setForceGraphCanvas] = useState<ForceGraphComponentType | null>(null);
+	const graphRef = useRef<CosmographRef>(undefined);
+
+	const [CosmographCanvas, setCosmographCanvas] = useState<CosmographComponentType | null>(null);
 	const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set(dataset.initialVisibleNodeIds));
 	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(dataset.initialNodeId);
 	const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -102,9 +116,9 @@ export default function GraphView() {
 	useEffect(() => {
 		let isMounted = true;
 
-		import('react-force-graph-2d').then((module) => {
+		import('@cosmograph/react').then((module) => {
 			if (isMounted) {
-				setForceGraphCanvas(() => module.default as unknown as ForceGraphComponentType);
+				setCosmographCanvas(() => module.Cosmograph as unknown as CosmographComponentType);
 			}
 		});
 
@@ -113,56 +127,119 @@ export default function GraphView() {
 		};
 	}, []);
 
+	const appendLog = useCallback((entry: string) => {
+		setSelectionLog((currentEntries) => [entry, ...currentEntries].slice(0, 10));
+	}, []);
+
+	const cosmographGraph = useMemo(() => {
+		const points: CosmographNode[] = visibleGraph.nodes.map((node, index) => {
+			const isHighlighted = highlightedNodeIds.has(node.id);
+			const faded = traceMode && selectedNodeId && !isHighlighted;
+			const baseColor = isHighlighted ? dataset.visual.neighborNodeColor : dataset.visual.nodeColors[node.kind];
+			const graphColor =
+				selectedNodeId === node.id ? dataset.visual.activeNodeColor
+				: faded ? 'rgba(71, 85, 105, 0.28)'
+				: baseColor;
+
+			// Pure deterministic fallback positions if x/y aren't provided by the dataset
+			const initialX = getPseudoRandomOffset(`${node.id}-x`, 10);
+			const initialY = getPseudoRandomOffset(`${node.id}-y`, 10);
+
+			return {
+				id: node.id,
+				pointIndex: index,
+				label: node.label,
+				title: node.title,
+				kind: node.kind,
+				degreeHint: node.degreeHint,
+				graphColor,
+				graphSize: node.size,
+				graphLabelWeight: Math.max(
+					1,
+					node.degreeHint +
+						(selectedNodeId === node.id ? 24
+						: isHighlighted ? 10
+						: 0),
+				),
+				x: node.x ?? initialX,
+				y: node.y ?? initialY,
+			};
+		});
+
+		const pointIndexByNodeId = new Map(points.map((node, index) => [node.id, index]));
+
+		const links: CosmographLink[] = visibleGraph.links.map((link) => {
+			const isHighlighted = highlightedLinkIds.has(getLinkKey(link));
+			const source = getEndpointId(link.source);
+			const target = getEndpointId(link.target);
+			const faded = traceMode && selectedNodeId && !(highlightedNodeIds.has(source) && highlightedNodeIds.has(target));
+
+			return {
+				source,
+				target,
+				sourceIndex: pointIndexByNodeId.get(source) ?? 0,
+				targetIndex: pointIndexByNodeId.get(target) ?? 0,
+				weight: link.weight,
+				relationship: link.relationship,
+				graphColor:
+					isHighlighted ? dataset.visual.activeLinkColor
+					: faded ? 'rgba(71, 85, 105, 0.12)'
+					: dataset.visual.linkColor,
+				graphWidth: isHighlighted ? dataset.visual.activeLinkWidth : dataset.visual.linkWidth + ((link.weight ?? 1) - 1) * 0.25,
+				graphStrength: dataset.force.linkStrength + ((link.weight ?? 1) - 1) * 0.02,
+			};
+		});
+
+		return { points, links };
+	}, [dataset.force.linkStrength, dataset.visual, highlightedLinkIds, highlightedNodeIds, selectedNodeId, traceMode, visibleGraph.links, visibleGraph.nodes]);
+
+	const nodeIndexById = useMemo(() => new Map(cosmographGraph.points.map((node, index) => [node.id, index])), [cosmographGraph.points]);
+
+	const centerOnNode = useCallback(
+		(nodeId: string | null) => {
+			const graph = graphRef.current;
+			if (!graph || !nodeId) {
+				return;
+			}
+
+			const nodeIndex = nodeIndexById.get(nodeId);
+			if (nodeIndex === undefined) {
+				return;
+			}
+
+			graph.selectPoint(nodeIndex, false, false);
+			graph.setFocusedPoint(nodeIndex);
+			graph.zoomToPoint(nodeIndex, dataset.viewport.focusDurationMs, dataset.force.focusZoom, true);
+		},
+		[dataset.force.focusZoom, dataset.viewport.focusDurationMs, nodeIndexById],
+	);
+
 	useEffect(() => {
 		const graph = graphRef.current;
 		if (!graph) {
 			return;
 		}
 
-		const chargeForce = graph.d3Force('charge') as ChargeForce | undefined;
-		chargeForce?.strength((node) => (node.isHub ? dataset.force.chargeStrength * 1.25 : dataset.force.chargeStrength));
-		chargeForce?.distanceMax?.(dataset.force.linkDistance * 7);
+		if (selectedNodeId) {
+			centerOnNode(selectedNodeId);
+			return;
+		}
 
-		const linkForce = graph.d3Force('link') as LinkForce | undefined;
-		linkForce?.distance((link) => dataset.force.linkDistance + ((link.weight ?? 1) - 1) * 10);
-		linkForce?.strength((link) => dataset.force.linkStrength + ((link.weight ?? 1) - 1) * 0.04);
-		linkForce?.iterations?.(2);
+		graph.unselectAllPoints();
+		graph.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
+	}, [centerOnNode, dataset.viewport.fitViewDurationMs, selectedNodeId, visibleGraph.links.length, visibleGraph.nodes.length]);
 
-		graph.zoomToFit(dataset.viewport.fitViewDurationMs, dataset.viewport.fitViewPadding);
-	}, [dataset, visibleGraph.links.length, visibleGraph.nodes.length]);
-
-	const appendLog = useCallback((entry: string) => {
-		setSelectionLog((currentEntries) => [entry, ...currentEntries].slice(0, 10));
-	}, []);
-
-	const centerOnNode = useCallback(
-		(nodeId: string | null, options?: { reheat?: boolean }) => {
-			if (!nodeId || !graphRef.current) {
+	const handleNodeSelection = useCallback(
+		(nodeId: string) => {
+			const typedNode = dataset.nodeById.get(nodeId);
+			if (!typedNode) {
 				return;
 			}
 
-			const node = dataset.nodeById.get(nodeId);
-			if (!node) {
-				return;
-			}
-
-			graphRef.current.centerAt(node.x ?? 0, node.y ?? 0, dataset.viewport.focusDurationMs);
-			graphRef.current.zoom(dataset.force.focusZoom, dataset.viewport.focusDurationMs);
-
-			if (options?.reheat && dataset.force.reheatOnSelect) {
-				graphRef.current.d3ReheatSimulation();
-			}
-		},
-		[dataset],
-	);
-
-	const handleNodeClick = useCallback(
-		(node: NodeObject<GraphNode>) => {
-			const typedNode = node as GraphNode;
 			setVisibleNodeIds((currentVisibleNodeIds) => {
 				const nextVisibleNodeIds = new Set(currentVisibleNodeIds);
-				for (const nodeId of expandSelection(dataset, typedNode.id)) {
-					nextVisibleNodeIds.add(nodeId);
+				for (const expandedNodeId of expandSelection(dataset, typedNode.id)) {
+					nextVisibleNodeIds.add(expandedNodeId);
 				}
 				return nextVisibleNodeIds;
 			});
@@ -171,17 +248,17 @@ export default function GraphView() {
 			setShowInfo(true);
 			setStatusMessage(`Selected ${typedNode.title}.`);
 			appendLog(`Selected ${typedNode.title}`);
-			centerOnNode(typedNode.id, { reheat: true });
 		},
-		[appendLog, centerOnNode, dataset],
+		[appendLog, dataset],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
 		setSelectedNodeId(null);
 		setHoveredNodeId(null);
 		setStatusMessage('Highlight cleared.');
-		graphRef.current?.zoomToFit(dataset.viewport.fitViewDurationMs, dataset.viewport.fitViewPadding);
-	}, [dataset.viewport.fitViewDurationMs, dataset.viewport.fitViewPadding]);
+		graphRef.current?.unselectAllPoints();
+		graphRef.current?.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
+	}, [dataset.viewport.fitViewDurationMs]);
 
 	const handleSearchSubmit = useCallback(
 		(event: React.FormEvent<HTMLFormElement>) => {
@@ -194,13 +271,12 @@ export default function GraphView() {
 				setSelectedNodeId(result.primaryMatchId);
 				setMenuOpen(true);
 				setShowInfo(true);
-				centerOnNode(result.primaryMatchId);
 				appendLog(`Searched “${result.query}” and surfaced ${result.matchedNodeIds.length} matching nodes.`);
 			} else if (result.query) {
 				appendLog(`Searched “${result.query}” with no local matches.`);
 			}
 		},
-		[appendLog, centerOnNode, dataset, searchQuery, visibleNodeIds],
+		[appendLog, dataset, searchQuery, visibleNodeIds],
 	);
 
 	const handleResetSession = useCallback(() => {
@@ -213,86 +289,16 @@ export default function GraphView() {
 		setSearchQuery('');
 		setStatusMessage('Session reset to the initial firm view.');
 		appendLog('Reset the local graph session.');
-		graphRef.current?.zoomToFit(dataset.viewport.fitViewDurationMs, dataset.viewport.fitViewPadding);
 	}, [appendLog, dataset]);
 
 	const handleReflow = useCallback(() => {
-		graphRef.current?.d3ReheatSimulation();
-		setStatusMessage('Layout reheated.');
+		graphRef.current?.start(dataset.force.manualReheatImpulse);
+		setStatusMessage('Layout gently nudged.');
 		appendLog('Reflowed the visible layout.');
-	}, [appendLog]);
+	}, [appendLog, dataset.force.manualReheatImpulse]);
 
-	const renderNode = useCallback(
-		(node: NodeObject<GraphNode>, ctx: CanvasRenderingContext2D, globalScale: number) => {
-			const typedNode = node as GraphNode;
-			const radius = typedNode.size;
-			const isHighlighted = highlightedNodeIds.has(typedNode.id);
-			const faded = traceMode && selectedNodeId && !isHighlighted;
-			const baseColor = isHighlighted ? dataset.visual.neighborNodeColor : dataset.visual.nodeColors[typedNode.kind];
-			const fillColor = selectedNodeId === typedNode.id ? dataset.visual.activeNodeColor : baseColor;
-
-			ctx.globalAlpha = faded ? 0.18 : 1;
-			ctx.beginPath();
-			ctx.arc(typedNode.x ?? 0, typedNode.y ?? 0, radius, 0, 2 * Math.PI, false);
-			ctx.fillStyle = fillColor;
-			ctx.fill();
-
-			ctx.lineWidth = typedNode.isHub ? 2.5 : 1.1;
-			ctx.strokeStyle = typedNode.isHub ? dataset.visual.hubRingColor : dataset.visual.nodeStrokeColor;
-			ctx.stroke();
-
-			const { fontSize, labelY, labelPadding } = getNodeLabelMetrics(typedNode, globalScale);
-			ctx.font = `${fontSize}px Inter, sans-serif`;
-			ctx.textAlign = 'center';
-			ctx.textBaseline = 'middle';
-
-			const labelWidth = ctx.measureText(typedNode.label).width;
-			const labelBoxWidth = labelWidth + labelPadding * 2;
-			const labelBoxHeight = fontSize + labelPadding * 1.5;
-			const labelBoxX = (typedNode.x ?? 0) - labelBoxWidth / 2;
-			const labelBoxY = labelY - labelBoxHeight / 2;
-
-			ctx.fillStyle = faded ? 'rgba(2, 6, 23, 0.32)' : 'rgba(2, 6, 23, 0.72)';
-			ctx.fillRect(labelBoxX, labelBoxY, labelBoxWidth, labelBoxHeight);
-
-			ctx.fillStyle = selectedNodeId === typedNode.id ? dataset.visual.activeLinkColor : dataset.visual.nodeLabelColor;
-			ctx.fillText(typedNode.label, typedNode.x ?? 0, labelY);
-
-			ctx.globalAlpha = 1;
-		},
-		[dataset.visual, highlightedNodeIds, selectedNodeId, traceMode],
-	);
-
-	const renderNodePointerArea = useCallback(
-		(node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D, globalScale: number) => {
-			const typedNode = node as GraphNode;
-			const minimumRadius = MIN_NODE_HIT_RADIUS_PX / globalScale;
-			const paddingRadius = NODE_HIT_RADIUS_PADDING_PX / globalScale;
-			const hitRadius = Math.max(typedNode.size + paddingRadius, minimumRadius);
-			const shouldIncludeLabelHitArea = typedNode.id === selectedNodeId || typedNode.id === hoveredNodeId;
-
-			ctx.beginPath();
-			ctx.arc(typedNode.x ?? 0, typedNode.y ?? 0, hitRadius, 0, 2 * Math.PI, false);
-			ctx.fillStyle = color;
-			ctx.fill();
-
-			if (!shouldIncludeLabelHitArea) {
-				return;
-			}
-
-			const { fontSize, labelY, labelPadding } = getNodeLabelMetrics(typedNode, globalScale);
-			ctx.font = `${fontSize}px Inter, sans-serif`;
-			const labelWidth = ctx.measureText(typedNode.label).width;
-			const labelBoxWidth = labelWidth + labelPadding * 2;
-			const labelBoxHeight = fontSize + labelPadding * 1.5;
-
-			ctx.fillRect((typedNode.x ?? 0) - labelBoxWidth / 2, labelY - labelBoxHeight / 2, labelBoxWidth, labelBoxHeight);
-		},
-		[hoveredNodeId, selectedNodeId],
-	);
-
-	if (!ForceGraphCanvas) {
-		return <div className='flex h-screen items-center justify-center bg-slate-950 text-white'>Loading force-directed graph...</div>;
+	if (!CosmographCanvas) {
+		return <div className='flex h-screen items-center justify-center bg-slate-950 text-white'>Loading Cosmograph...</div>;
 	}
 
 	return (
@@ -521,32 +527,75 @@ export default function GraphView() {
 				:	null}
 
 				<main className='relative flex-1'>
-					<ForceGraphCanvas
-						ref={graphRef}
-						graphData={visibleGraph}
-						backgroundColor={dataset.visual.backgroundColor}
-						nodeRelSize={1}
-						nodeVal={(node) => node.size}
-						nodeLabel={(node) => `${node.title} • ${getKindLabel(node.kind)} • ${node.degreeHint} connections`}
-						nodeCanvasObject={renderNode}
-						nodePointerAreaPaint={renderNodePointerArea}
-						linkWidth={(link) =>
-							highlightedLinkIds.has(getLinkKey(link as GraphLink)) ? dataset.visual.activeLinkWidth : dataset.visual.linkWidth + ((link.weight ?? 1) - 1) * 0.25
-						}
-						linkColor={(link) => (highlightedLinkIds.has(getLinkKey(link as GraphLink)) ? dataset.visual.activeLinkColor : dataset.visual.linkColor)}
-						linkDirectionalParticles={(link) => (highlightedLinkIds.has(getLinkKey(link as GraphLink)) ? 2 : 0)}
-						linkDirectionalParticleWidth={2.2}
-						linkDirectionalParticleColor={() => dataset.visual.linkParticleColor}
-						d3AlphaMin={dataset.force.alphaMin}
-						d3AlphaDecay={dataset.force.alphaDecay}
-						d3VelocityDecay={dataset.force.velocityDecay}
-						warmupTicks={dataset.force.warmupTicks}
-						cooldownTicks={dataset.force.cooldownTicks}
-						autoPauseRedraw={false}
-						onNodeHover={(node) => setHoveredNodeId(node ? String(node.id) : null)}
-						onNodeClick={handleNodeClick}
-						onBackgroundClick={handleBackgroundClick}
-					/>
+					<div className='absolute inset-0'>
+						<CosmographCanvas
+							ref={graphRef}
+							className='h-full w-full'
+							style={{ height: '100%', width: '100%' }}
+							backgroundColor={dataset.visual.backgroundColor}
+							enableSimulation
+							preservePointPositionsOnDataUpdate
+							points={cosmographGraph.points}
+							links={cosmographGraph.links}
+							pointIdBy='id'
+							pointIndexBy='pointIndex'
+							pointXBy='x'
+							pointYBy='y'
+							linkSourceBy='source'
+							linkTargetBy='target'
+							linkSourceIndexBy='sourceIndex'
+							linkTargetIndexBy='targetIndex'
+							pointColorBy='graphColor'
+							pointColorByFn={(value: unknown) => String(value)}
+							pointSizeBy='graphSize'
+							pointSizeByFn={(value: unknown) => Number(value)}
+							pointLabelBy='label'
+							pointLabelWeightBy='graphLabelWeight'
+							linkColorBy='graphColor'
+							linkColorByFn={(value: unknown) => String(value)}
+							linkWidthBy='graphWidth'
+							linkWidthByFn={(value: unknown) => Number(value)}
+							linkStrengthBy='graphStrength'
+							linkStrengthByFn={(value: unknown) => Number(value)}
+							showLabels
+							showDynamicLabels
+							showDynamicLabelsLimit={28}
+							showTopLabels={false}
+							showFocusedPointLabel
+							showSelectedLabels
+							showHoveredPointLabel
+							focusPointOnClick
+							selectPointOnClick='single'
+							resetSelectionOnEmptyCanvasClick
+							fitViewDuration={dataset.viewport.fitViewDurationMs}
+							fitViewPadding={COSMOGRAPH_FIT_VIEW_PADDING}
+							simulationDecay={dataset.force.simulationDecay}
+							simulationGravity={dataset.force.simulationGravity}
+							simulationCenter={dataset.force.simulationCenter}
+							simulationRepulsion={dataset.force.simulationRepulsion}
+							simulationRepulsionFromMouse={dataset.force.simulationRepulsionFromMouse}
+							simulationLinkDistance={dataset.force.linkDistance}
+							simulationLinkDistRandomVariationRange={dataset.force.simulationLinkDistanceVariation}
+							simulationFriction={dataset.force.simulationFriction}
+							simulationImpulse={dataset.force.simulationImpulse}
+							pointLabelColor={dataset.visual.nodeLabelColor}
+							pointLabelFontSize={13}
+							onPointClick={(index) => {
+								const node = cosmographGraph.points[index];
+								if (node) {
+									handleNodeSelection(node.id);
+								}
+							}}
+							onBackgroundClick={handleBackgroundClick}
+							onPointMouseOver={(index) => {
+								const node = cosmographGraph.points[index];
+								setHoveredNodeId(node?.id ?? null);
+							}}
+							onPointMouseOut={() => {
+								setHoveredNodeId(null);
+							}}
+						/>
+					</div>
 
 					<button
 						className='absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-slate-950/80 px-5 py-2 text-sm text-slate-200 shadow-lg shadow-slate-950/50 backdrop-blur'
