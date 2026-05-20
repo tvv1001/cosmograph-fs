@@ -13,7 +13,6 @@ import {
 	inferRelatedGraphFromDetails,
 	mergeGraphDataset,
 	projectGraphData,
-	revealSearchResults,
 	type BadgeTone,
 	type GraphDataset,
 	type GraphLink,
@@ -56,19 +55,31 @@ type CosmographLink = Record<string, unknown> & {
 
 const COSMOGRAPH_FIT_VIEW_PADDING = 0.14;
 
-function getPhyllotaxisPosition(nodeIndex: number, totalNodes: number, degreeHint: number): { x: number; y: number } {
+function getOrganicShellPosition(node: GraphNode, nodeIndex: number, totalNodes: number, maxDegreeHint: number): { x: number; y: number } {
 	const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 	const normalizedIndex = nodeIndex + 1;
 	const normalizedTotal = Math.max(1, totalNodes);
-	const radialProgress = Math.sqrt(normalizedIndex / normalizedTotal);
-	const degreePull = Math.min(0.24, Math.log2(Math.max(1, degreeHint) + 1) * 0.045);
-	const radius = 13 * Math.max(0.14, radialProgress - degreePull);
+	const orbitalProgress = Math.sqrt(normalizedIndex / normalizedTotal);
+	const normalizedDegree = maxDegreeHint > 0 ? node.degreeHint / maxDegreeHint : 0;
+	const connectionMass = Math.log2(Math.max(1, node.degreeHint) + 1);
+	const shellBias =
+		node.isHub ? 0.28
+		: node.kind === 'firm' ? 0.42
+		: 0.62;
+	const shellRadius = 14 + shellBias * 34 + orbitalProgress * 18 - normalizedDegree * 12 - Math.min(4.2, connectionMass * 0.9);
 	const angle = normalizedIndex * goldenAngle;
+	const ellipticalStretchX = node.kind === 'firm' ? 1.02 : 1.1;
+	const ellipticalStretchY = node.kind === 'firm' ? 0.94 : 1.06;
+	const microJitter = ((nodeIndex % 5) - 2) * 0.45;
 
 	return {
-		x: Math.cos(angle) * radius,
-		y: Math.sin(angle) * radius,
+		x: Math.cos(angle) * (shellRadius + microJitter) * ellipticalStretchX,
+		y: Math.sin(angle) * (shellRadius - microJitter * 0.5) * ellipticalStretchY,
 	};
+}
+
+function getConnectionGravityBias(sourceDegree: number, targetDegree: number): number {
+	return Math.log2(sourceDegree + targetDegree + 2);
 }
 
 export default function GraphView() {
@@ -90,6 +101,7 @@ export default function GraphView() {
 	const [menuOpen, setMenuOpen] = useState(true);
 	const [panelPinned, setPanelPinned] = useState(true);
 	const [isSearchingUpstream, setIsSearchingUpstream] = useState(false);
+	const previousVisibleGraphSizeRef = useRef({ nodes: 0, links: 0 });
 
 	const visibleGraph = useMemo(() => projectGraphData(dataset, visibleNodeIds), [dataset, visibleNodeIds]);
 	const selectedNode = selectedNodeId ? (dataset.nodeById.get(selectedNodeId) ?? null) : null;
@@ -162,16 +174,15 @@ export default function GraphView() {
 
 	const cosmographGraph = useMemo(() => {
 		const totalVisibleNodes = Math.max(1, visibleGraph.nodes.length);
+		const maxDegreeHint = visibleGraph.nodes.reduce((maxDegree, node) => Math.max(maxDegree, node.degreeHint), 0);
 		const points: CosmographNode[] = visibleGraph.nodes.map((node, index) => {
 			const isHighlighted = highlightedNodeIds.has(node.id);
-			const faded = traceMode && selectedNodeId && !isHighlighted;
-			const baseColor = isHighlighted ? dataset.visual.neighborNodeColor : dataset.visual.nodeColors[node.kind];
-			const graphColor =
+			const baseColor =
 				selectedNodeId === node.id ? dataset.visual.activeNodeColor
-				: faded ? 'rgba(71, 85, 105, 0.28)'
-				: baseColor;
+				: isHighlighted ? dataset.visual.neighborNodeColor
+				: dataset.visual.nodeColors[node.kind];
 
-			const fallbackPosition = getPhyllotaxisPosition(index, totalVisibleNodes, node.degreeHint);
+			const fallbackPosition = getOrganicShellPosition(node, index, totalVisibleNodes, maxDegreeHint);
 
 			return {
 				id: node.id,
@@ -180,7 +191,7 @@ export default function GraphView() {
 				title: node.title,
 				kind: node.kind,
 				degreeHint: node.degreeHint,
-				graphColor,
+				graphColor: baseColor,
 				graphSize: node.size,
 				graphLabelWeight: Math.max(
 					1,
@@ -200,7 +211,9 @@ export default function GraphView() {
 			const isHighlighted = highlightedLinkIds.has(getLinkIdentityKey(link));
 			const source = getEndpointId(link.source);
 			const target = getEndpointId(link.target);
-			const faded = traceMode && selectedNodeId && !(highlightedNodeIds.has(source) && highlightedNodeIds.has(target));
+			const sourceNode = dataset.nodeById.get(source);
+			const targetNode = dataset.nodeById.get(target);
+			const connectionGravityBias = getConnectionGravityBias(sourceNode?.degreeHint ?? 0, targetNode?.degreeHint ?? 0);
 			const relationshipVisual = getRelationshipVisual(link.relationship);
 
 			return {
@@ -210,17 +223,17 @@ export default function GraphView() {
 				targetIndex: pointIndexByNodeId.get(target) ?? 0,
 				weight: link.weight,
 				relationship: link.relationship,
-				graphColor:
-					isHighlighted ? relationshipVisual.highlightColor
-					: faded ? 'rgba(71, 85, 105, 0.12)'
-					: relationshipVisual.color,
-				graphWidth: isHighlighted ? Math.max(dataset.visual.activeLinkWidth, relationshipVisual.width + 0.4) : relationshipVisual.width + ((link.weight ?? 1) - 1) * 0.18,
-				graphStrength: dataset.force.linkStrength + relationshipVisual.strengthDelta + ((link.weight ?? 1) - 1) * 0.02,
+				graphColor: isHighlighted ? relationshipVisual.highlightColor : relationshipVisual.color,
+				graphWidth:
+					isHighlighted ?
+						Math.max(dataset.visual.activeLinkWidth, relationshipVisual.width + 0.45 + connectionGravityBias * 0.04)
+					:	relationshipVisual.width + ((link.weight ?? 1) - 1) * 0.18 + connectionGravityBias * 0.035,
+				graphStrength: dataset.force.linkStrength + relationshipVisual.strengthDelta + ((link.weight ?? 1) - 1) * 0.02 + connectionGravityBias * 0.018,
 			};
 		});
 
 		return { points, links };
-	}, [dataset.force.linkStrength, dataset.visual, highlightedLinkIds, highlightedNodeIds, selectedNodeId, traceMode, visibleGraph.links, visibleGraph.nodes]);
+	}, [dataset.force.linkStrength, dataset.nodeById, dataset.visual, highlightedLinkIds, highlightedNodeIds, selectedNodeId, visibleGraph.links, visibleGraph.nodes]);
 
 	const nodeIndexById = useMemo(() => new Map(cosmographGraph.points.map((node, index) => [node.id, index])), [cosmographGraph.points]);
 
@@ -257,6 +270,31 @@ export default function GraphView() {
 		graph.unselectAllPoints();
 		graph.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
 	}, [centerOnNode, dataset.viewport.fitViewDurationMs, selectedNodeId, visibleGraph.links.length, visibleGraph.nodes.length]);
+
+	useEffect(() => {
+		const graph = graphRef.current;
+		if (!graph) {
+			previousVisibleGraphSizeRef.current = {
+				nodes: visibleGraph.nodes.length,
+				links: visibleGraph.links.length,
+			};
+			return;
+		}
+
+		const previousGraphSize = previousVisibleGraphSizeRef.current;
+		const addedNodes = Math.max(0, visibleGraph.nodes.length - previousGraphSize.nodes);
+		const addedLinks = Math.max(0, visibleGraph.links.length - previousGraphSize.links);
+
+		if (addedNodes > 0 || addedLinks > 0) {
+			const expansionImpulse = Math.min(0.52, dataset.force.simulationImpulse + addedNodes * 0.018 + addedLinks * 0.008);
+			graph.start(expansionImpulse);
+		}
+
+		previousVisibleGraphSizeRef.current = {
+			nodes: visibleGraph.nodes.length,
+			links: visibleGraph.links.length,
+		};
+	}, [dataset.force.simulationImpulse, visibleGraph.links.length, visibleGraph.nodes.length]);
 
 	const handleNodeSelection = useCallback(
 		(nodeId: string) => {
@@ -301,38 +339,19 @@ export default function GraphView() {
 	const handleSearchSubmit = useCallback(
 		async (event: React.FormEvent<HTMLFormElement>) => {
 			event.preventDefault();
-			const result = revealSearchResults(dataset, visibleNodeIds, searchQuery);
-			if (result.primaryMatchId) {
-				const hydration = hydrateNodeRelationships(dataset, result.primaryMatchId);
-				const nextDataset = hydration.dataset;
-				if (hydration.addedNodeCount > 0 || hydration.addedLinkCount > 0) {
-					setDataset(nextDataset);
-				}
+			const normalizedQuery = searchQuery.trim().toLowerCase();
 
-				const nextVisibleNodeIds = new Set(visibleNodeIds);
-				for (const expandedNodeId of expandSelection(nextDataset, result.primaryMatchId)) nextVisibleNodeIds.add(expandedNodeId);
-				setVisibleNodeIds(nextVisibleNodeIds);
-				setStatusMessage(hydration.addedNodeCount > 0 ? `${result.message} Added ${hydration.addedNodeCount} detail-derived nodes.` : result.message);
-
-				setSelectedNodeId(result.primaryMatchId);
-				setMenuOpen(true);
-				setShowInfo(true);
-				appendLog(`Searched “${result.query}” and surfaced ${result.matchedNodeIds.length} matching nodes.`);
+			if (!normalizedQuery) {
+				setStatusMessage('Enter a name, firm, or CRD/SEC# to expand the graph.');
 				return;
 			}
 
-			if (!result.query) {
-				setVisibleNodeIds(result.visibleNodeIds);
-				setStatusMessage(result.message);
-				return;
-			}
-
-			setStatusMessage(`No local matches for “${result.query}”. Checking FINRA/SEC APIs…`);
-			appendLog(`Searched “${result.query}” with no local matches. Checking upstream APIs.`);
+			setStatusMessage(`Checking local cache for “${normalizedQuery}”, then FINRA/SEC APIs if needed…`);
+			appendLog(`Searched “${normalizedQuery}” via cache-first lookup.`);
 			setIsSearchingUpstream(true);
 
 			try {
-				const response = await fetch(`/api/finra/search?query=${encodeURIComponent(result.query)}`);
+				const response = await fetch(`/api/finra/search?query=${encodeURIComponent(normalizedQuery)}`);
 				const remoteResult = (await response.json()) as RemoteGraphSearchResult;
 
 				if (!response.ok) {
@@ -341,7 +360,7 @@ export default function GraphView() {
 
 				if (!remoteResult.primaryMatchId || remoteResult.nodes.length === 0) {
 					setStatusMessage(remoteResult.message);
-					appendLog(`No upstream matches found for “${result.query}”.`);
+					appendLog(`No cached or upstream matches found for “${normalizedQuery}”.`);
 					return;
 				}
 
@@ -361,13 +380,13 @@ export default function GraphView() {
 				setStatusMessage(hydration.addedNodeCount > 0 ? `${remoteResult.message} Added ${hydration.addedNodeCount} detail-derived nodes.` : remoteResult.message);
 				appendLog(
 					remoteResult.source === 'local' ?
-						`Loaded ${remoteResult.matchedNodeIds.length} cached node(s) for “${result.query}”.`
-					:	`Fetched ${remoteResult.matchedNodeIds.length} upstream node(s) for “${result.query}” and saved them locally.`,
+						`Loaded ${remoteResult.matchedNodeIds.length} cached node(s) for “${normalizedQuery}”.`
+					:	`Fetched ${remoteResult.matchedNodeIds.length} upstream node(s) for “${normalizedQuery}” and saved them locally.`,
 				);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'Unknown search failure.';
-				setStatusMessage(`Unable to fetch upstream data for “${result.query}”.`);
-				appendLog(`Upstream lookup failed for “${result.query}”: ${message}`);
+				setStatusMessage(`Unable to fetch cached/upstream data for “${normalizedQuery}”.`);
+				appendLog(`Cache/upstream lookup failed for “${normalizedQuery}”: ${message}`);
 			} finally {
 				setIsSearchingUpstream(false);
 			}
@@ -634,7 +653,7 @@ export default function GraphView() {
 							className='h-full w-full'
 							style={{ height: '100%', width: '100%' }}
 							backgroundColor={dataset.visual.backgroundColor}
-							enableSimulation={selectedNodeId !== null}
+							enableSimulation={visibleGraph.nodes.length > 1}
 							preservePointPositionsOnDataUpdate
 							points={cosmographGraph.points}
 							links={cosmographGraph.links}
@@ -675,9 +694,12 @@ export default function GraphView() {
 							simulationLinkDistance={dataset.force.linkDistance}
 							simulationLinkDistRandomVariationRange={dataset.force.simulationLinkDistanceVariation}
 							simulationFriction={dataset.force.simulationFriction}
-							simulationImpulse={selectedNodeId ? dataset.force.simulationImpulse : 0}
+							simulationImpulse={dataset.force.simulationImpulse}
 							pointLabelColor={dataset.visual.nodeLabelColor}
 							pointLabelFontSize={13}
+							pointGreyoutOpacity={1}
+							focusedPointRingColor={dataset.visual.focusedPointRingColor}
+							hoveredPointRingColor={dataset.visual.hoveredPointRingColor}
 							onPointClick={(index) => {
 								const node = cosmographGraph.points[index];
 								if (node) {

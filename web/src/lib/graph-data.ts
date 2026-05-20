@@ -100,6 +100,8 @@ export interface GraphDataset {
 		nodeColors: Record<GraphNodeKind, string>;
 		hubRingColor: string;
 		activeNodeColor: string;
+		focusedPointRingColor: string;
+		hoveredPointRingColor: string;
 		neighborNodeColor: string;
 		linkColor: string;
 		activeLinkColor: string;
@@ -148,27 +150,27 @@ export interface DetailInferenceOptions {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	chargeStrength: -86,
-	linkDistance: 52,
-	linkStrength: 0.28,
-	simulationDecay: 1800,
-	simulationGravity: 0.14,
-	simulationCenter: 0.28,
-	simulationRepulsion: 0.54,
+	chargeStrength: -156,
+	linkDistance: 86,
+	linkStrength: 0.24,
+	simulationDecay: 2300,
+	simulationGravity: 0.11,
+	simulationCenter: 0.18,
+	simulationRepulsion: 0.76,
 	simulationRepulsionFromMouse: 0,
-	simulationLinkDistanceVariation: [1, 1.03],
-	simulationFriction: 0.92,
-	simulationImpulse: 0.16,
-	manualReheatImpulse: 0.22,
+	simulationLinkDistanceVariation: [0.92, 1.16],
+	simulationFriction: 0.86,
+	simulationImpulse: 0.24,
+	manualReheatImpulse: 0.32,
 	velocityDecay: 0.32,
 	alphaDecay: 0.042,
 	alphaMin: 0.004,
-	warmupTicks: 64,
-	cooldownTicks: 280,
-	collisionPadding: 12,
-	neighborhoodSpread: 34,
+	warmupTicks: 82,
+	cooldownTicks: 360,
+	collisionPadding: 15,
+	neighborhoodSpread: 56,
 	focusZoom: 1.75,
-	reheatOnSelect: false,
+	reheatOnSelect: true,
 };
 
 const DEFAULT_VISUAL_CONFIG = {
@@ -179,6 +181,8 @@ const DEFAULT_VISUAL_CONFIG = {
 	} satisfies Record<GraphNodeKind, string>,
 	hubRingColor: '#e0f2fe',
 	activeNodeColor: '#f8fafc',
+	focusedPointRingColor: 'rgba(56, 189, 248, 0.96)',
+	hoveredPointRingColor: 'rgba(125, 211, 252, 0.72)',
 	neighborNodeColor: '#fde68a',
 	linkColor: 'rgba(148, 163, 184, 0.18)',
 	activeLinkColor: 'rgba(125, 211, 252, 0.96)',
