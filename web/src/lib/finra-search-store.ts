@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createClient } from 'redis';
 
 import type { GraphLink, GraphNode, GraphNodeKind, RelationshipKind, RemoteGraphSearchResult } from '@/lib/graph-data';
 import { getIdSourceFlag } from '@/lib/graph-data';
@@ -126,6 +127,11 @@ const FINRA_DATA_DIRECTORY = path.join(WEB_ROOT, 'data', 'finra');
 const PEOPLE_DIRECTORY = path.join(FINRA_DATA_DIRECTORY, 'entities', 'people');
 const FIRMS_DIRECTORY = path.join(FINRA_DATA_DIRECTORY, 'entities', 'firms');
 const RELATIONSHIPS_DIRECTORY = path.join(FINRA_DATA_DIRECTORY, 'relationships');
+const REDIS_KEY_PREFIX = (process.env.REDIS_KEY_PREFIX ?? 'finra').trim() || 'finra';
+
+type RedisCacheClient = ReturnType<typeof createClient>;
+
+let redisClientPromise: Promise<RedisCacheClient | null> | null = null;
 
 export async function searchFinraGraph(query: string): Promise<RemoteGraphSearchResult> {
 	const normalizedQuery = normalizeSearchQuery(query);
@@ -548,6 +554,12 @@ function createGraphFirmNode(firm: AggregatedFirm): GraphNode {
 }
 
 async function loadAllStoredEntities(): Promise<StoredEntityRecord[]> {
+	const redisClient = await getRedisClient();
+	if (redisClient) {
+		const [peopleRecords, firmRecords] = await Promise.all([readRedisEntityRecords(redisClient, 'individual'), readRedisEntityRecords(redisClient, 'firm')]);
+		return [...peopleRecords, ...firmRecords];
+	}
+
 	const [peopleRecords, firmRecords] = await Promise.all([readEntityRecords(PEOPLE_DIRECTORY), readEntityRecords(FIRMS_DIRECTORY)]);
 	return [...peopleRecords, ...firmRecords];
 }
@@ -563,10 +575,25 @@ async function readEntityRecords(directory: string): Promise<StoredEntityRecord[
 }
 
 async function readRelationshipRecord(nodeId: string): Promise<StoredRelationshipRecord | null> {
+	const redisClient = await getRedisClient();
+	if (redisClient) {
+		return readRedisJson<StoredRelationshipRecord>(redisClient, getRedisRelationshipKey(nodeId));
+	}
+
 	return readJsonFile<StoredRelationshipRecord>(path.join(RELATIONSHIPS_DIRECTORY, `${sanitizeFileName(nodeId)}.json`));
 }
 
 async function writeEntityRecord(record: StoredEntityRecord): Promise<void> {
+	const redisClient = await getRedisClient();
+	if (redisClient) {
+		const redisKey = getRedisEntityKey(record.kind, record.crd);
+		const existing = await readRedisJson<StoredEntityRecord>(redisClient, redisKey);
+		const mergedRecord: StoredEntityRecord = existing ? mergeEntityRecords(existing, record) : record;
+		await writeRedisJson(redisClient, redisKey, mergedRecord);
+		await redisClient.sAdd(getRedisEntitySetKey(record.kind), redisKey);
+		return;
+	}
+
 	const directory = record.kind === 'individual' ? PEOPLE_DIRECTORY : FIRMS_DIRECTORY;
 	const filePath = path.join(directory, `${sanitizeFileName(record.crd)}.json`);
 	const existing = await readJsonFile<StoredEntityRecord>(filePath);
@@ -575,6 +602,16 @@ async function writeEntityRecord(record: StoredEntityRecord): Promise<void> {
 }
 
 async function writeRelationshipRecord(record: StoredRelationshipRecord): Promise<void> {
+	const redisClient = await getRedisClient();
+	if (redisClient) {
+		const redisKey = getRedisRelationshipKey(record.nodeId);
+		const existing = await readRedisJson<StoredRelationshipRecord>(redisClient, redisKey);
+		const mergedRecord = existing ? mergeRelationshipRecords(existing, record) : record;
+		await writeRedisJson(redisClient, redisKey, mergedRecord);
+		await redisClient.sAdd(getRedisRelationshipSetKey(), redisKey);
+		return;
+	}
+
 	const filePath = path.join(RELATIONSHIPS_DIRECTORY, `${sanitizeFileName(record.nodeId)}.json`);
 	const existing = await readJsonFile<StoredRelationshipRecord>(filePath);
 	const mergedRecord = existing ? mergeRelationshipRecords(existing, record) : record;
@@ -652,6 +689,10 @@ function appendRelationship(relationshipAccumulator: Map<string, StoredRelations
 }
 
 async function ensureLocalDirectories(): Promise<void> {
+	if (await getRedisClient()) {
+		return;
+	}
+
 	await Promise.all([fs.mkdir(PEOPLE_DIRECTORY, { recursive: true }), fs.mkdir(FIRMS_DIRECTORY, { recursive: true }), fs.mkdir(RELATIONSHIPS_DIRECTORY, { recursive: true })]);
 }
 
@@ -662,6 +703,70 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 	} catch {
 		return null;
 	}
+}
+
+async function getRedisClient(): Promise<RedisCacheClient | null> {
+	const redisUrl = process.env.REDIS_URL?.trim();
+	if (!redisUrl) {
+		return null;
+	}
+
+	if (!redisClientPromise) {
+		redisClientPromise = (async () => {
+			try {
+				const client = createClient({ url: redisUrl });
+				client.on('error', (error: unknown) => {
+					console.error('Redis cache error:', error);
+				});
+				await client.connect();
+				return client;
+			} catch (error) {
+				console.error('Unable to connect to Redis cache, falling back to local files.', error);
+				return null;
+			}
+		})();
+	}
+
+	return redisClientPromise;
+}
+
+async function readRedisEntityRecords(redisClient: RedisCacheClient, kind: StoredEntityRecord['kind']): Promise<StoredEntityRecord[]> {
+	const keys = await redisClient.sMembers(getRedisEntitySetKey(kind));
+	if (keys.length === 0) {
+		return [];
+	}
+
+	const records = await Promise.all(keys.map((key: string) => readRedisJson<StoredEntityRecord>(redisClient, key)));
+	return records.filter((record: StoredEntityRecord | null): record is StoredEntityRecord => Boolean(record)).map(normalizeStoredEntityRecord);
+}
+
+async function readRedisJson<T>(redisClient: RedisCacheClient, key: string): Promise<T | null> {
+	try {
+		const rawValue = await redisClient.get(key);
+		return rawValue ? (JSON.parse(rawValue) as T) : null;
+	} catch {
+		return null;
+	}
+}
+
+async function writeRedisJson(redisClient: RedisCacheClient, key: string, value: unknown): Promise<void> {
+	await redisClient.set(key, JSON.stringify(value));
+}
+
+function getRedisEntitySetKey(kind: StoredEntityRecord['kind']): string {
+	return `${REDIS_KEY_PREFIX}:entities:${kind === 'individual' ? 'people' : 'firms'}`;
+}
+
+function getRedisEntityKey(kind: StoredEntityRecord['kind'], crd: string): string {
+	return `${getRedisEntitySetKey(kind)}:${sanitizeFileName(crd)}`;
+}
+
+function getRedisRelationshipSetKey(): string {
+	return `${REDIS_KEY_PREFIX}:relationships`;
+}
+
+function getRedisRelationshipKey(nodeId: string): string {
+	return `${getRedisRelationshipSetKey()}:${sanitizeFileName(nodeId)}`;
 }
 
 function getSettledValue<T>(result: PromiseSettledResult<T>): T | null {

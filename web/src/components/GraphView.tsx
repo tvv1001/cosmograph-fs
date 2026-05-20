@@ -56,14 +56,19 @@ type CosmographLink = Record<string, unknown> & {
 
 const COSMOGRAPH_FIT_VIEW_PADDING = 0.14;
 
-// Pure function to generate a consistent pseudo-random offset based on a string seed (like an ID)
-function getPseudoRandomOffset(seedString: string, range: number): number {
-	let hash = 0;
-	for (let i = 0; i < seedString.length; i++) {
-		hash = (Math.imul(31, hash) + seedString.charCodeAt(i)) | 0;
-	}
-	// Convert hash to a deterministic value between -range and +range
-	return ((Math.abs(hash) % 10000) / 10000 - 0.5) * range * 2;
+function getPhyllotaxisPosition(nodeIndex: number, totalNodes: number, degreeHint: number): { x: number; y: number } {
+	const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+	const normalizedIndex = nodeIndex + 1;
+	const normalizedTotal = Math.max(1, totalNodes);
+	const radialProgress = Math.sqrt(normalizedIndex / normalizedTotal);
+	const degreePull = Math.min(0.24, Math.log2(Math.max(1, degreeHint) + 1) * 0.045);
+	const radius = 13 * Math.max(0.14, radialProgress - degreePull);
+	const angle = normalizedIndex * goldenAngle;
+
+	return {
+		x: Math.cos(angle) * radius,
+		y: Math.sin(angle) * radius,
+	};
 }
 
 export default function GraphView() {
@@ -138,7 +143,8 @@ export default function GraphView() {
 	}, []);
 
 	const hydrateNodeRelationships = useCallback((baseDataset: GraphDataset, nodeId: string) => {
-		const inferredPayload = inferRelatedGraphFromDetails(baseDataset, nodeId);
+		const sourceNode = baseDataset.nodeById.get(nodeId);
+		const inferredPayload = inferRelatedGraphFromDetails(baseDataset, nodeId, sourceNode?.kind === 'firm' ? { allowedRelationships: ['employment'] } : undefined);
 		if (inferredPayload.nodes.length === 0 && inferredPayload.links.length === 0) {
 			return {
 				dataset: baseDataset,
@@ -155,6 +161,7 @@ export default function GraphView() {
 	}, []);
 
 	const cosmographGraph = useMemo(() => {
+		const totalVisibleNodes = Math.max(1, visibleGraph.nodes.length);
 		const points: CosmographNode[] = visibleGraph.nodes.map((node, index) => {
 			const isHighlighted = highlightedNodeIds.has(node.id);
 			const faded = traceMode && selectedNodeId && !isHighlighted;
@@ -164,9 +171,7 @@ export default function GraphView() {
 				: faded ? 'rgba(71, 85, 105, 0.28)'
 				: baseColor;
 
-			// Pure deterministic fallback positions if x/y aren't provided by the dataset
-			const initialX = getPseudoRandomOffset(`${node.id}-x`, 10);
-			const initialY = getPseudoRandomOffset(`${node.id}-y`, 10);
+			const fallbackPosition = getPhyllotaxisPosition(index, totalVisibleNodes, node.degreeHint);
 
 			return {
 				id: node.id,
@@ -184,8 +189,8 @@ export default function GraphView() {
 						: isHighlighted ? 10
 						: 0),
 				),
-				x: node.x ?? initialX,
-				y: node.y ?? initialY,
+				x: node.x ?? fallbackPosition.x,
+				y: node.y ?? fallbackPosition.y,
 			};
 		});
 

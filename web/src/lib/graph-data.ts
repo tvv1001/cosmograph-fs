@@ -141,28 +141,32 @@ export interface RemoteGraphSearchResult {
 	message: string;
 }
 
+export interface DetailInferenceOptions {
+	allowedRelationships?: RelationshipKind[];
+}
+
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	chargeStrength: -108,
-	linkDistance: 78,
-	linkStrength: 0.2,
+	chargeStrength: -86,
+	linkDistance: 52,
+	linkStrength: 0.28,
 	simulationDecay: 1800,
-	simulationGravity: 0.06,
-	simulationCenter: 0.18,
-	simulationRepulsion: 0.65,
+	simulationGravity: 0.14,
+	simulationCenter: 0.28,
+	simulationRepulsion: 0.54,
 	simulationRepulsionFromMouse: 0,
 	simulationLinkDistanceVariation: [1, 1.03],
 	simulationFriction: 0.92,
-	simulationImpulse: 0.12,
-	manualReheatImpulse: 0.16,
+	simulationImpulse: 0.16,
+	manualReheatImpulse: 0.22,
 	velocityDecay: 0.32,
-	alphaDecay: 0.048,
+	alphaDecay: 0.042,
 	alphaMin: 0.004,
-	warmupTicks: 42,
-	cooldownTicks: 220,
-	collisionPadding: 9,
-	neighborhoodSpread: 44,
+	warmupTicks: 64,
+	cooldownTicks: 280,
+	collisionPadding: 12,
+	neighborhoodSpread: 34,
 	focusZoom: 1.75,
 	reheatOnSelect: false,
 };
@@ -323,14 +327,53 @@ export function expandSelection(dataset: GraphDataset, nodeId: string): Set<stri
 	const visibleNodeIds = new Set<string>([nodeId]);
 	if (!selectedNode) return visibleNodeIds;
 
-	const directNeighbors = dataset.adjacency.get(nodeId) ?? new Set<string>();
-	for (const neighborId of directNeighbors) visibleNodeIds.add(neighborId);
+	const connectedLinks = dataset.linksByNodeId.get(nodeId) ?? [];
 
-	if (selectedNode.kind === 'individual') {
-		for (const neighborId of directNeighbors) {
-			const neighborNode = dataset.nodeById.get(neighborId);
-			if (neighborNode?.kind !== 'firm') continue;
-			for (const secondDegreeId of dataset.adjacency.get(neighborId) ?? []) visibleNodeIds.add(secondDegreeId);
+	if (selectedNode.kind === 'firm') {
+		for (const link of connectedLinks) {
+			if (link.relationship !== 'employment') {
+				continue;
+			}
+
+			const employeeId = getOppositeEndpointId(link, nodeId);
+			if (!employeeId) {
+				continue;
+			}
+
+			const employeeNode = dataset.nodeById.get(employeeId);
+			if (employeeNode?.kind === 'individual') {
+				visibleNodeIds.add(employeeId);
+			}
+		}
+
+		return visibleNodeIds;
+	}
+
+	for (const link of connectedLinks) {
+		const neighborId = getOppositeEndpointId(link, nodeId);
+		if (neighborId) {
+			visibleNodeIds.add(neighborId);
+		}
+	}
+
+	for (const link of connectedLinks) {
+		const neighborId = getOppositeEndpointId(link, nodeId);
+		if (!neighborId) {
+			continue;
+		}
+
+		const neighborNode = dataset.nodeById.get(neighborId);
+		if (neighborNode?.kind !== 'firm') continue;
+
+		for (const secondDegreeLink of dataset.linksByNodeId.get(neighborId) ?? []) {
+			if (secondDegreeLink.relationship !== 'employment') {
+				continue;
+			}
+
+			const secondDegreeId = getOppositeEndpointId(secondDegreeLink, neighborId);
+			if (secondDegreeId) {
+				visibleNodeIds.add(secondDegreeId);
+			}
 		}
 	}
 
@@ -393,7 +436,7 @@ export function getIdSourceFlag(hasFinraSource: boolean, hasSecSource: boolean):
 	return undefined;
 }
 
-export function inferRelatedGraphFromDetails(dataset: GraphDataset, nodeId: string): { nodes: GraphNode[]; links: GraphLink[] } {
+export function inferRelatedGraphFromDetails(dataset: GraphDataset, nodeId: string, options?: DetailInferenceOptions): { nodes: GraphNode[]; links: GraphLink[] } {
 	const sourceNode = dataset.nodeById.get(nodeId);
 	if (!sourceNode) {
 		return { nodes: [], links: [] };
@@ -405,6 +448,10 @@ export function inferRelatedGraphFromDetails(dataset: GraphDataset, nodeId: stri
 	for (const section of sourceNode.detailSections) {
 		const sectionRelationshipKind = getSectionRelationshipKind(section.title);
 		if (!sectionRelationshipKind || !section.items?.length) {
+			continue;
+		}
+
+		if (options?.allowedRelationships && !options.allowedRelationships.includes(sectionRelationshipKind)) {
 			continue;
 		}
 
@@ -1419,9 +1466,22 @@ function connectEmployment(links: GraphLink[], linkKeys: Set<string>, degreeCoun
 }
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): number {
-	if (isHub) return Math.min(22, 10.5 + Math.log2(degreeHint + 1) * 1.9);
-	if (kind === 'individual') return Math.min(9.2, 4.8 + Math.log2(degreeHint + 1) * 1.02);
-	return 5.5;
+	const normalizedDegree = Math.max(0, degreeHint);
+	const hasMultipleConnections = normalizedDegree > 1;
+
+	if (isHub) {
+		const baseSize = 16;
+		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 2.8 + (hasMultipleConnections ? 1.4 : 0);
+		return Math.min(30, connectedSize);
+	}
+
+	if (kind === 'individual') {
+		const baseSize = 9.6;
+		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 1.8 + (hasMultipleConnections ? 1.1 : 0);
+		return Math.min(16.5, connectedSize);
+	}
+
+	return 11;
 }
 
 function scoreSearchMatch(haystack: string, needle: string): number {
@@ -1431,6 +1491,18 @@ function scoreSearchMatch(haystack: string, needle: string): number {
 
 export function getEndpointId(endpoint: string | GraphNode): string {
 	return typeof endpoint === 'string' ? endpoint : endpoint.id;
+}
+
+function getOppositeEndpointId(link: GraphLink, nodeId: string): string | null {
+	const sourceId = getEndpointId(link.source);
+	const targetId = getEndpointId(link.target);
+	if (sourceId === nodeId) {
+		return targetId;
+	}
+	if (targetId === nodeId) {
+		return sourceId;
+	}
+	return null;
 }
 
 export function getLinkKey(link: GraphLink): string {

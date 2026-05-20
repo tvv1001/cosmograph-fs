@@ -36,6 +36,7 @@ web/build/
 web/coverage/
 web/.vercel/
 web/*.tsbuildinfo
+web/data/finra/
 
 # Rust / WASM build output
 wasm-sim/target/
