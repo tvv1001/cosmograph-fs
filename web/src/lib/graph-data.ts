@@ -1052,9 +1052,9 @@ function connectEmployment(links: GraphLink[], linkKeys: Set<string>, degreeCoun
 }
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): number {
-	if (isHub) return Math.min(17.5, 8 + Math.log2(degreeHint + 1) * 1.55);
-	if (kind === 'individual') return Math.min(7.4, 3.2 + Math.log2(degreeHint + 1) * 0.82);
-	return 4;
+	if (isHub) return Math.min(22, 10.5 + Math.log2(degreeHint + 1) * 1.9);
+	if (kind === 'individual') return Math.min(9.2, 4.8 + Math.log2(degreeHint + 1) * 1.02);
+	return 5.5;
 }
 
 function scoreSearchMatch(haystack: string, needle: string): number {

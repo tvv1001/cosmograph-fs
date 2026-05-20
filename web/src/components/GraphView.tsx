@@ -68,8 +68,7 @@ export default function GraphView() {
 
 	const [CosmographCanvas, setCosmographCanvas] = useState<CosmographComponentType | null>(null);
 	const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set(dataset.initialVisibleNodeIds));
-	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(dataset.initialNodeId);
-	const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 	const [searchQuery, setSearchQuery] = useState('');
 	const [statusMessage, setStatusMessage] = useState('Ready with a seeded FINRA-style graph. Search a name like “thornton”.');
 	const [selectionLog, setSelectionLog] = useState<string[]>(['Loaded NEXA SECURITIES demo graph.']);
@@ -82,7 +81,7 @@ export default function GraphView() {
 
 	const visibleGraph = useMemo(() => projectGraphData(dataset, visibleNodeIds), [dataset, visibleNodeIds]);
 	const selectedNode = selectedNodeId ? (dataset.nodeById.get(selectedNodeId) ?? null) : null;
-	const activeNodeId = hoveredNodeId ?? selectedNodeId;
+	const activeNodeId = selectedNodeId;
 	const displayedStats = useMemo(() => getDisplayedStats(visibleGraph), [visibleGraph]);
 
 	const highlightedNodeIds = useMemo(() => {
@@ -254,7 +253,6 @@ export default function GraphView() {
 
 	const handleBackgroundClick = useCallback(() => {
 		setSelectedNodeId(null);
-		setHoveredNodeId(null);
 		setStatusMessage('Highlight cleared.');
 		graphRef.current?.unselectAllPoints();
 		graphRef.current?.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
@@ -281,13 +279,12 @@ export default function GraphView() {
 
 	const handleResetSession = useCallback(() => {
 		setVisibleNodeIds(new Set(dataset.initialVisibleNodeIds));
-		setSelectedNodeId(dataset.initialNodeId);
-		setHoveredNodeId(null);
+		setSelectedNodeId(null);
 		setTraceMode(false);
 		setShowInfo(true);
 		setShowLog(false);
 		setSearchQuery('');
-		setStatusMessage('Session reset to the initial firm view.');
+		setStatusMessage('Session reset. Select a node to explore the graph.');
 		appendLog('Reset the local graph session.');
 	}, [appendLog, dataset]);
 
@@ -533,7 +530,7 @@ export default function GraphView() {
 							className='h-full w-full'
 							style={{ height: '100%', width: '100%' }}
 							backgroundColor={dataset.visual.backgroundColor}
-							enableSimulation
+							enableSimulation={selectedNodeId !== null}
 							preservePointPositionsOnDataUpdate
 							points={cosmographGraph.points}
 							links={cosmographGraph.links}
@@ -563,9 +560,6 @@ export default function GraphView() {
 							showTopLabels={false}
 							showFocusedPointLabel
 							showSelectedLabels
-							showHoveredPointLabel
-							focusPointOnClick
-							selectPointOnClick='single'
 							resetSelectionOnEmptyCanvasClick
 							fitViewDuration={dataset.viewport.fitViewDurationMs}
 							fitViewPadding={COSMOGRAPH_FIT_VIEW_PADDING}
@@ -577,7 +571,7 @@ export default function GraphView() {
 							simulationLinkDistance={dataset.force.linkDistance}
 							simulationLinkDistRandomVariationRange={dataset.force.simulationLinkDistanceVariation}
 							simulationFriction={dataset.force.simulationFriction}
-							simulationImpulse={dataset.force.simulationImpulse}
+							simulationImpulse={selectedNodeId ? dataset.force.simulationImpulse : 0}
 							pointLabelColor={dataset.visual.nodeLabelColor}
 							pointLabelFontSize={13}
 							onPointClick={(index) => {
@@ -586,14 +580,13 @@ export default function GraphView() {
 									handleNodeSelection(node.id);
 								}
 							}}
-							onBackgroundClick={handleBackgroundClick}
-							onPointMouseOver={(index) => {
+							onLabelClick={(index) => {
 								const node = cosmographGraph.points[index];
-								setHoveredNodeId(node?.id ?? null);
+								if (node) {
+									handleNodeSelection(node.id);
+								}
 							}}
-							onPointMouseOut={() => {
-								setHoveredNodeId(null);
-							}}
+							onBackgroundClick={handleBackgroundClick}
 						/>
 					</div>
 
