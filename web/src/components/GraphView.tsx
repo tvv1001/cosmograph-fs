@@ -136,7 +136,7 @@ export default function GraphView() {
 	}, []);
 
 	const centerOnNode = useCallback(
-		(nodeId: string | null) => {
+		(nodeId: string | null, options?: { reheat?: boolean }) => {
 			if (!nodeId || !graphRef.current) {
 				return;
 			}
@@ -148,41 +148,12 @@ export default function GraphView() {
 
 			graphRef.current.centerAt(node.x ?? 0, node.y ?? 0, dataset.viewport.focusDurationMs);
 			graphRef.current.zoom(dataset.force.focusZoom, dataset.viewport.focusDurationMs);
+
+			if (options?.reheat && dataset.force.reheatOnSelect) {
+				graphRef.current.d3ReheatSimulation();
+			}
 		},
 		[dataset],
-	);
-
-	const spreadNeighborhood = useCallback(
-		(node: GraphNode) => {
-			const graph = graphRef.current;
-			if (!graph) {
-				return;
-			}
-
-			const neighborIds = Array.from(dataset.adjacency.get(node.id) ?? []).filter((neighborId) => visibleNodeIds.has(neighborId));
-			const originX = node.x ?? 0;
-			const originY = node.y ?? 0;
-			const spreadRadius = dataset.force.neighborhoodSpread + neighborIds.length * 3;
-
-			neighborIds.forEach((neighborId, index) => {
-				const neighbor = dataset.nodeById.get(neighborId);
-				if (!neighbor) {
-					return;
-				}
-
-				const angle = (Math.PI * 2 * index) / Math.max(neighborIds.length, 1);
-				neighbor.x = originX + Math.cos(angle) * spreadRadius;
-				neighbor.y = originY + Math.sin(angle) * spreadRadius;
-			});
-
-			graph.centerAt(originX, originY, dataset.viewport.focusDurationMs);
-			graph.zoom(dataset.force.focusZoom, dataset.viewport.focusDurationMs);
-
-			if (dataset.force.reheatOnSelect) {
-				graph.d3ReheatSimulation();
-			}
-		},
-		[dataset, visibleNodeIds],
 	);
 
 	const handleNodeClick = useCallback(
@@ -200,9 +171,9 @@ export default function GraphView() {
 			setShowInfo(true);
 			setStatusMessage(`Selected ${typedNode.title}.`);
 			appendLog(`Selected ${typedNode.title}`);
-			spreadNeighborhood(typedNode);
+			centerOnNode(typedNode.id, { reheat: true });
 		},
-		[appendLog, dataset, spreadNeighborhood],
+		[appendLog, centerOnNode, dataset],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
@@ -223,12 +194,13 @@ export default function GraphView() {
 				setSelectedNodeId(result.primaryMatchId);
 				setMenuOpen(true);
 				setShowInfo(true);
+				centerOnNode(result.primaryMatchId);
 				appendLog(`Searched “${result.query}” and surfaced ${result.matchedNodeIds.length} matching nodes.`);
 			} else if (result.query) {
 				appendLog(`Searched “${result.query}” with no local matches.`);
 			}
 		},
-		[appendLog, dataset, searchQuery, visibleNodeIds],
+		[appendLog, centerOnNode, dataset, searchQuery, visibleNodeIds],
 	);
 
 	const handleResetSession = useCallback(() => {
@@ -291,25 +263,33 @@ export default function GraphView() {
 		[dataset.visual, highlightedNodeIds, selectedNodeId, traceMode],
 	);
 
-	const renderNodePointerArea = useCallback((node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D, globalScale: number) => {
-		const typedNode = node as GraphNode;
-		const minimumRadius = MIN_NODE_HIT_RADIUS_PX / globalScale;
-		const paddingRadius = NODE_HIT_RADIUS_PADDING_PX / globalScale;
-		const hitRadius = Math.max(typedNode.size + paddingRadius, minimumRadius);
-		const { fontSize, labelY, labelPadding } = getNodeLabelMetrics(typedNode, globalScale);
+	const renderNodePointerArea = useCallback(
+		(node: NodeObject<GraphNode>, color: string, ctx: CanvasRenderingContext2D, globalScale: number) => {
+			const typedNode = node as GraphNode;
+			const minimumRadius = MIN_NODE_HIT_RADIUS_PX / globalScale;
+			const paddingRadius = NODE_HIT_RADIUS_PADDING_PX / globalScale;
+			const hitRadius = Math.max(typedNode.size + paddingRadius, minimumRadius);
+			const shouldIncludeLabelHitArea = typedNode.id === selectedNodeId || typedNode.id === hoveredNodeId;
 
-		ctx.font = `${fontSize}px Inter, sans-serif`;
-		const labelWidth = ctx.measureText(typedNode.label).width;
-		const labelBoxWidth = labelWidth + labelPadding * 2;
-		const labelBoxHeight = fontSize + labelPadding * 1.5;
+			ctx.beginPath();
+			ctx.arc(typedNode.x ?? 0, typedNode.y ?? 0, hitRadius, 0, 2 * Math.PI, false);
+			ctx.fillStyle = color;
+			ctx.fill();
 
-		ctx.beginPath();
-		ctx.arc(typedNode.x ?? 0, typedNode.y ?? 0, hitRadius, 0, 2 * Math.PI, false);
-		ctx.fillStyle = color;
-		ctx.fill();
+			if (!shouldIncludeLabelHitArea) {
+				return;
+			}
 
-		ctx.fillRect((typedNode.x ?? 0) - labelBoxWidth / 2, labelY - labelBoxHeight / 2, labelBoxWidth, labelBoxHeight);
-	}, []);
+			const { fontSize, labelY, labelPadding } = getNodeLabelMetrics(typedNode, globalScale);
+			ctx.font = `${fontSize}px Inter, sans-serif`;
+			const labelWidth = ctx.measureText(typedNode.label).width;
+			const labelBoxWidth = labelWidth + labelPadding * 2;
+			const labelBoxHeight = fontSize + labelPadding * 1.5;
+
+			ctx.fillRect((typedNode.x ?? 0) - labelBoxWidth / 2, labelY - labelBoxHeight / 2, labelBoxWidth, labelBoxHeight);
+		},
+		[hoveredNodeId, selectedNodeId],
+	);
 
 	if (!ForceGraphCanvas) {
 		return <div className='flex h-screen items-center justify-center bg-slate-950 text-white'>Loading force-directed graph...</div>;
@@ -566,14 +546,6 @@ export default function GraphView() {
 						onNodeHover={(node) => setHoveredNodeId(node ? String(node.id) : null)}
 						onNodeClick={handleNodeClick}
 						onBackgroundClick={handleBackgroundClick}
-						onEngineStop={() => {
-							if (selectedNodeId) {
-								centerOnNode(selectedNodeId);
-								return;
-							}
-
-							graphRef.current?.zoomToFit(dataset.viewport.fitViewDurationMs, dataset.viewport.fitViewPadding);
-						}}
 					/>
 
 					<button
