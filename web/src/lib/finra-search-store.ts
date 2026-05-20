@@ -7,6 +7,10 @@ import { getIdSourceFlag } from '@/lib/graph-data';
 
 const MAX_UPSTREAM_RESULTS = 8;
 const LOCAL_MATCH_LIMIT = 12;
+const LOCAL_QUERY_CACHE_TTL_MS = 2 * 60 * 1000;
+const EXTERNAL_QUERY_CACHE_TTL_MS = 10 * 60 * 1000;
+const LOCAL_ENTITY_CACHE_TTL_MS = 45 * 1000;
+const UPSTREAM_FETCH_REVALIDATE_SECONDS = 10 * 60;
 
 type SourceSystem = 'finra' | 'sec';
 
@@ -132,6 +136,8 @@ const REDIS_KEY_PREFIX = (process.env.REDIS_KEY_PREFIX ?? 'finra').trim() || 'fi
 type RedisCacheClient = ReturnType<typeof createClient>;
 
 let redisClientPromise: Promise<RedisCacheClient | null> | null = null;
+let localEntityCache: { records: StoredEntityRecord[]; expiresAt: number } | null = null;
+const searchResultCache = new Map<string, { result: RemoteGraphSearchResult; expiresAt: number }>();
 
 export async function searchFinraGraph(query: string): Promise<RemoteGraphSearchResult> {
 	const normalizedQuery = normalizeSearchQuery(query);
@@ -148,14 +154,22 @@ export async function searchFinraGraph(query: string): Promise<RemoteGraphSearch
 		};
 	}
 
+	const cachedResult = readCachedSearchResult(normalizedQuery);
+	if (cachedResult) {
+		return cachedResult;
+	}
+
 	await ensureLocalDirectories();
 
 	const localResult = await searchLocalGraph(normalizedQuery);
 	if (localResult.matchedNodeIds.length > 0) {
+		cacheSearchResult(normalizedQuery, localResult, LOCAL_QUERY_CACHE_TTL_MS);
 		return localResult;
 	}
 
-	return fetchAndPersistExternalGraph(normalizedQuery);
+	const externalResult = await fetchAndPersistExternalGraph(normalizedQuery);
+	cacheSearchResult(normalizedQuery, externalResult, externalResult.source === 'external' ? EXTERNAL_QUERY_CACHE_TTL_MS : LOCAL_QUERY_CACHE_TTL_MS);
+	return externalResult;
 }
 
 async function searchLocalGraph(normalizedQuery: string): Promise<RemoteGraphSearchResult> {
@@ -326,7 +340,9 @@ async function fetchUpstreamSearch<T>(endpoint: string, query: string): Promise<
 			'Accept': 'application/json',
 			'User-Agent': 'Mozilla/5.0',
 		},
-		cache: 'no-store',
+		next: {
+			revalidate: UPSTREAM_FETCH_REVALIDATE_SECONDS,
+		},
 	});
 
 	if (!response.ok) {
@@ -560,8 +576,18 @@ async function loadAllStoredEntities(): Promise<StoredEntityRecord[]> {
 		return [...peopleRecords, ...firmRecords];
 	}
 
+	const now = Date.now();
+	if (localEntityCache && localEntityCache.expiresAt > now) {
+		return localEntityCache.records;
+	}
+
 	const [peopleRecords, firmRecords] = await Promise.all([readEntityRecords(PEOPLE_DIRECTORY), readEntityRecords(FIRMS_DIRECTORY)]);
-	return [...peopleRecords, ...firmRecords];
+	const records = [...peopleRecords, ...firmRecords];
+	localEntityCache = {
+		records,
+		expiresAt: now + LOCAL_ENTITY_CACHE_TTL_MS,
+	};
+	return records;
 }
 
 async function readEntityRecords(directory: string): Promise<StoredEntityRecord[]> {
@@ -584,6 +610,7 @@ async function readRelationshipRecord(nodeId: string): Promise<StoredRelationshi
 }
 
 async function writeEntityRecord(record: StoredEntityRecord): Promise<void> {
+	invalidateLocalSearchCaches();
 	const redisClient = await getRedisClient();
 	if (redisClient) {
 		const redisKey = getRedisEntityKey(record.kind, record.crd);
@@ -602,6 +629,7 @@ async function writeEntityRecord(record: StoredEntityRecord): Promise<void> {
 }
 
 async function writeRelationshipRecord(record: StoredRelationshipRecord): Promise<void> {
+	invalidateLocalSearchCaches();
 	const redisClient = await getRedisClient();
 	if (redisClient) {
 		const redisKey = getRedisRelationshipKey(record.nodeId);
@@ -694,6 +722,32 @@ async function ensureLocalDirectories(): Promise<void> {
 	}
 
 	await Promise.all([fs.mkdir(PEOPLE_DIRECTORY, { recursive: true }), fs.mkdir(FIRMS_DIRECTORY, { recursive: true }), fs.mkdir(RELATIONSHIPS_DIRECTORY, { recursive: true })]);
+}
+
+function readCachedSearchResult(query: string): RemoteGraphSearchResult | null {
+	const cachedEntry = searchResultCache.get(query);
+	if (!cachedEntry) {
+		return null;
+	}
+
+	if (cachedEntry.expiresAt <= Date.now()) {
+		searchResultCache.delete(query);
+		return null;
+	}
+
+	return cachedEntry.result;
+}
+
+function cacheSearchResult(query: string, result: RemoteGraphSearchResult, ttlMs: number): void {
+	searchResultCache.set(query, {
+		result,
+		expiresAt: Date.now() + ttlMs,
+	});
+}
+
+function invalidateLocalSearchCaches(): void {
+	localEntityCache = null;
+	searchResultCache.clear();
 }
 
 async function readJsonFile<T>(filePath: string): Promise<T | null> {

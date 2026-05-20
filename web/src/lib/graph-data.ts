@@ -150,26 +150,26 @@ export interface DetailInferenceOptions {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	chargeStrength: -156,
-	linkDistance: 86,
-	linkStrength: 0.24,
-	simulationDecay: 2300,
-	simulationGravity: 0.11,
-	simulationCenter: 0.18,
-	simulationRepulsion: 0.76,
+	chargeStrength: -180,
+	linkDistance: 176,
+	linkStrength: 0.18,
+	simulationDecay: 2550,
+	simulationGravity: 0.06,
+	simulationCenter: 0.1,
+	simulationRepulsion: 0.64,
 	simulationRepulsionFromMouse: 0,
-	simulationLinkDistanceVariation: [0.92, 1.16],
-	simulationFriction: 0.86,
-	simulationImpulse: 0.24,
-	manualReheatImpulse: 0.32,
+	simulationLinkDistanceVariation: [0.8, 1.34],
+	simulationFriction: 0.9,
+	simulationImpulse: 0.18,
+	manualReheatImpulse: 0.22,
 	velocityDecay: 0.32,
 	alphaDecay: 0.042,
 	alphaMin: 0.004,
 	warmupTicks: 82,
 	cooldownTicks: 360,
-	collisionPadding: 15,
-	neighborhoodSpread: 56,
-	focusZoom: 1.75,
+	collisionPadding: 24,
+	neighborhoodSpread: 72,
+	focusZoom: 1.6,
 	reheatOnSelect: true,
 };
 
@@ -184,13 +184,13 @@ const DEFAULT_VISUAL_CONFIG = {
 	focusedPointRingColor: 'rgba(56, 189, 248, 0.96)',
 	hoveredPointRingColor: 'rgba(125, 211, 252, 0.72)',
 	neighborNodeColor: '#fde68a',
-	linkColor: 'rgba(148, 163, 184, 0.18)',
+	linkColor: 'rgba(125, 211, 252, 0.72)',
 	activeLinkColor: 'rgba(125, 211, 252, 0.96)',
 	linkParticleColor: '#e0f2fe',
-	linkWidth: 0.95,
-	activeLinkWidth: 2.1,
+	linkWidth: 2.4,
+	activeLinkWidth: 3.2,
 	nodeStrokeColor: 'rgba(15, 23, 42, 0.92)',
-	nodeLabelColor: '#e2e8f0',
+	nodeLabelColor: '#ffffff',
 	panelBackground: 'rgba(2, 6, 23, 0.88)',
 	panelBorder: 'rgba(148, 163, 184, 0.12)',
 };
@@ -315,7 +315,7 @@ export function createGraphDataset(): GraphDataset {
 		initialVisibleNodeIds: [],
 	};
 
-	dataset.initialVisibleNodeIds = Array.from(expandSelection(dataset, INITIAL_FIRM_ID));
+	dataset.initialVisibleNodeIds = nodes.map((node) => node.id);
 	return dataset;
 }
 
@@ -1474,18 +1474,18 @@ function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): n
 	const hasMultipleConnections = normalizedDegree > 1;
 
 	if (isHub) {
-		const baseSize = 16;
-		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 2.8 + (hasMultipleConnections ? 1.4 : 0);
-		return Math.min(30, connectedSize);
+		const baseSize = 42;
+		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 8 + (hasMultipleConnections ? 4 : 0);
+		return Math.min(72, connectedSize);
 	}
 
 	if (kind === 'individual') {
-		const baseSize = 9.6;
-		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 1.8 + (hasMultipleConnections ? 1.1 : 0);
-		return Math.min(16.5, connectedSize);
+		const baseSize = 28;
+		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 5.2 + (hasMultipleConnections ? 3 : 0);
+		return Math.min(54, connectedSize);
 	}
 
-	return 11;
+	return 32;
 }
 
 function scoreSearchMatch(haystack: string, needle: string): number {

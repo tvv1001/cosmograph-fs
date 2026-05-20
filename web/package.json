@@ -5,6 +5,7 @@
 	"packageManager": "pnpm@10.22.0",
 	"scripts": {
 		"dev": "next dev",
+		"dev:clean": "node -e \"const fs=require('fs'); const path=require('path'); ['.next','.turbo'].forEach((dir)=>fs.rmSync(path.resolve(dir), { recursive: true, force: true })); console.log('Cleaned Next.js temp directories.');\"",
 		"build": "next build",
 		"start": "next start",
 		"lint": "eslint"

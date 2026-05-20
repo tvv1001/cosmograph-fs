@@ -59,6 +59,19 @@ type PointPosition = {
 };
 
 const COSMOGRAPH_FIT_VIEW_PADDING = 0.14;
+const HOLD_TO_DRAG_MS = 500;
+const CLICK_MOVE_TOLERANCE_PX = 6;
+
+type DragCandidate = {
+	pointerId: number;
+	nodeId: string;
+	nodeIndex: number;
+	startClientX: number;
+	startClientY: number;
+	lastClientX: number;
+	lastClientY: number;
+	dragActive: boolean;
+};
 
 function getOrganicShellPosition(node: GraphNode, nodeIndex: number, totalNodes: number, maxDegreeHint: number): { x: number; y: number } {
 	const goldenAngle = Math.PI * (3 - Math.sqrt(5));
@@ -68,18 +81,20 @@ function getOrganicShellPosition(node: GraphNode, nodeIndex: number, totalNodes:
 	const normalizedDegree = maxDegreeHint > 0 ? node.degreeHint / maxDegreeHint : 0;
 	const connectionMass = Math.log2(Math.max(1, node.degreeHint) + 1);
 	const shellBias =
-		node.isHub ? 0.28
-		: node.kind === 'firm' ? 0.42
-		: 0.62;
-	const shellRadius = 14 + shellBias * 34 + orbitalProgress * 18 - normalizedDegree * 12 - Math.min(4.2, connectionMass * 0.9);
-	const angle = normalizedIndex * goldenAngle;
-	const ellipticalStretchX = node.kind === 'firm' ? 1.02 : 1.1;
-	const ellipticalStretchY = node.kind === 'firm' ? 0.94 : 1.06;
-	const microJitter = ((nodeIndex % 5) - 2) * 0.45;
+		node.isHub ? 0.18
+		: node.kind === 'firm' ? 0.34
+		: 0.68;
+	const radialSpan = 220 + Math.sqrt(normalizedTotal) * 26;
+	const shellRadius = 46 + shellBias * 96 + orbitalProgress * radialSpan - normalizedDegree * 10 - Math.min(10, connectionMass * 1.8);
+	const angle = normalizedIndex * goldenAngle + normalizedDegree * 0.035;
+	const ellipticalStretchX = node.kind === 'firm' ? 1.18 : 1.26;
+	const ellipticalStretchY = node.kind === 'firm' ? 0.92 : 1.08;
+	const radialJitter = (((nodeIndex * 17) % 11) - 5) * 1.6;
+	const tangentialJitter = (((nodeIndex * 13) % 9) - 4) * 1.1;
 
 	return {
-		x: Math.cos(angle) * (shellRadius + microJitter) * ellipticalStretchX,
-		y: Math.sin(angle) * (shellRadius - microJitter * 0.5) * ellipticalStretchY,
+		x: Math.cos(angle) * (shellRadius + radialJitter) * ellipticalStretchX - Math.sin(angle) * tangentialJitter,
+		y: Math.sin(angle) * (shellRadius - radialJitter * 0.35) * ellipticalStretchY + Math.cos(angle) * tangentialJitter * 0.75,
 	};
 }
 
@@ -108,15 +123,34 @@ function getClusteredExpansionPosition(
 	const angle = baseAngle + nodeIndex * slice;
 	const anchorMass = Math.log2(Math.max(1, anchorNode.degreeHint) + 1);
 	const nodeMass = Math.log2(Math.max(1, node.degreeHint) + 1);
-	const ringRadius = Math.max(12, anchorNode.size * 0.95 + 10 + ringDepth * 12 + Math.max(0, nodeCount - 1) * 1.45 + anchorMass * 2.2 + nodeMass);
-	const ellipseX = node.kind === 'firm' ? 1.02 : 1.14;
-	const ellipseY = node.kind === 'firm' ? 0.94 : 1.04;
-	const jitter = ((nodeIndex % 3) - 1) * 0.75;
+	const ringRadius = Math.max(34, anchorNode.size * 1.22 + 26 + ringDepth * 22 + Math.max(0, nodeCount - 1) * 2.4 + anchorMass * 4.8 + nodeMass * 2.6);
+	const ellipseX = node.kind === 'firm' ? 1.1 : 1.22;
+	const ellipseY = node.kind === 'firm' ? 0.92 : 1.06;
+	const jitter = ((nodeIndex % 5) - 2) * 1.25;
+	const tangentialOffset = (nodeIndex % 2 === 0 ? 1 : -1) * (ringDepth + 1) * 6.5;
 
 	return {
-		x: anchorPosition.x + Math.cos(angle) * (ringRadius + jitter) * ellipseX,
-		y: anchorPosition.y + Math.sin(angle) * (ringRadius - jitter * 0.5) * ellipseY,
+		x: anchorPosition.x + Math.cos(angle) * (ringRadius + jitter) * ellipseX - Math.sin(angle) * tangentialOffset,
+		y: anchorPosition.y + Math.sin(angle) * (ringRadius - jitter * 0.4) * ellipseY + Math.cos(angle) * tangentialOffset * 0.65,
 	};
+}
+
+function areNodeIdSetsEqual(left: Set<string>, right: Set<string>): boolean {
+	if (left === right) {
+		return true;
+	}
+
+	if (left.size !== right.size) {
+		return false;
+	}
+
+	for (const value of left) {
+		if (!right.has(value)) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 export default function GraphView() {
@@ -124,6 +158,7 @@ export default function GraphView() {
 	const regulatorSchema = DEFAULT_REGULATOR_SCHEMA;
 	const regulatorLabel = regulatorSchema['search-results']['x-site-source'];
 	const graphRef = useRef<CosmographRef>(undefined);
+	const graphSurfaceRef = useRef<HTMLDivElement>(null);
 	const searchInputRef = useRef<HTMLInputElement>(null);
 
 	const [CosmographCanvas, setCosmographCanvas] = useState<CosmographComponentType | null>(null);
@@ -140,26 +175,32 @@ export default function GraphView() {
 	const [panelPinned, setPanelPinned] = useState(true);
 	const [isSearchingUpstream, setIsSearchingUpstream] = useState(false);
 	const previousVisibleGraphSizeRef = useRef({ nodes: 0, links: 0 });
+	const hoveredPointIndexRef = useRef<number | null>(null);
+	const hoveredPointIdRef = useRef<string | null>(null);
+	const suppressNextCanvasClickRef = useRef(false);
+	const holdToDragTimerRef = useRef<number | null>(null);
+	const dragCandidateRef = useRef<DragCandidate | null>(null);
+	const dragAnimationFrameRef = useRef<number | null>(null);
+	const pendingDragPositionRef = useRef<{ nodeId: string; position: PointPosition; fixed: boolean } | null>(null);
+	const handleNodeSelectionRef = useRef<(nodeId: string) => void>(() => undefined);
+	const selectedAnchorNodeIdRef = useRef<string | null>(null);
+	const hasAutoReflowedOnLoadRef = useRef(false);
 
 	const visibleGraph = useMemo(() => projectGraphData(dataset, visibleNodeIds), [dataset, visibleNodeIds]);
 	const selectedNode = selectedNodeId ? (dataset.nodeById.get(selectedNodeId) ?? null) : null;
-	const activeNodeId = selectedNodeId;
 	const displayedStats = useMemo(() => getDisplayedStats(visibleGraph), [visibleGraph]);
+	const graphHighlightNodeId = traceMode ? selectedNodeId : null;
 
 	const highlightedNodeIds = useMemo(() => {
-		if (!activeNodeId) {
+		if (!traceMode || !selectedNodeId) {
 			return new Set<string>();
 		}
 
-		if (traceMode && selectedNodeId) {
-			return expandSelection(dataset, selectedNodeId);
-		}
-
-		return new Set([activeNodeId, ...(dataset.adjacency.get(activeNodeId) ?? new Set())]);
-	}, [activeNodeId, dataset, selectedNodeId, traceMode]);
+		return expandSelection(dataset, selectedNodeId);
+	}, [dataset, selectedNodeId, traceMode]);
 
 	const highlightedLinkIds = useMemo(() => {
-		if (!activeNodeId) {
+		if (!traceMode || !selectedNodeId) {
 			return new Set<string>();
 		}
 
@@ -168,11 +209,11 @@ export default function GraphView() {
 				.filter((link) => {
 					const source = getEndpointId(link.source);
 					const target = getEndpointId(link.target);
-					return highlightedNodeIds.has(source) && highlightedNodeIds.has(target) && (traceMode || source === activeNodeId || target === activeNodeId);
+					return highlightedNodeIds.has(source) && highlightedNodeIds.has(target);
 				})
 				.map((link) => getLinkIdentityKey(link)),
 		);
-	}, [activeNodeId, highlightedNodeIds, traceMode, visibleGraph.links]);
+	}, [highlightedNodeIds, selectedNodeId, traceMode, visibleGraph.links]);
 
 	useEffect(() => {
 		let isMounted = true;
@@ -220,8 +261,8 @@ export default function GraphView() {
 		const points: CosmographNode[] = visibleGraph.nodes.map((node, index) => {
 			const isHighlighted = highlightedNodeIds.has(node.id);
 			const baseColor =
-				selectedNodeId === node.id ? dataset.visual.activeNodeColor
-				: isHighlighted ? dataset.visual.neighborNodeColor
+				graphHighlightNodeId === node.id ? dataset.visual.activeNodeColor
+				: traceMode && isHighlighted ? dataset.visual.neighborNodeColor
 				: dataset.visual.nodeColors[node.kind];
 
 			const fallbackPosition = getOrganicShellPosition(node, index, totalVisibleNodes, maxDegreeHint);
@@ -238,8 +279,8 @@ export default function GraphView() {
 				graphLabelWeight: Math.max(
 					1,
 					node.degreeHint +
-						(selectedNodeId === node.id ? 24
-						: isHighlighted ? 10
+						(graphHighlightNodeId === node.id ? 24
+						: traceMode && isHighlighted ? 10
 						: 0),
 				),
 				x: node.x ?? fallbackPosition.x,
@@ -275,7 +316,17 @@ export default function GraphView() {
 		});
 
 		return { points, links };
-	}, [dataset.force.linkStrength, dataset.nodeById, dataset.visual, highlightedLinkIds, highlightedNodeIds, selectedNodeId, visibleGraph.links, visibleGraph.nodes]);
+	}, [
+		dataset.force.linkStrength,
+		dataset.nodeById,
+		dataset.visual,
+		graphHighlightNodeId,
+		highlightedLinkIds,
+		highlightedNodeIds,
+		traceMode,
+		visibleGraph.links,
+		visibleGraph.nodes,
+	]);
 
 	const nodeIndexById = useMemo(() => new Map(cosmographGraph.points.map((node, index) => [node.id, index])), [cosmographGraph.points]);
 	const renderedNodePositionById = useMemo(
@@ -304,11 +355,185 @@ export default function GraphView() {
 				return;
 			}
 
-			graph.selectPoint(nodeIndex, false, false);
-			graph.setFocusedPoint(nodeIndex);
 			graph.zoomToPoint(nodeIndex, dataset.viewport.focusDurationMs, dataset.force.focusZoom, true);
 		},
 		[dataset.force.focusZoom, dataset.viewport.focusDurationMs, nodeIndexById],
+	);
+
+	const nudgeGraphLayout = useCallback(
+		(impulse = dataset.force.manualReheatImpulse) => {
+			if (visibleGraph.nodes.length <= 1) {
+				return;
+			}
+
+			graphRef.current?.start(impulse);
+		},
+		[dataset.force.manualReheatImpulse, visibleGraph.nodes.length],
+	);
+
+	const updateNodePosition = useCallback((nodeId: string, position: PointPosition, fixed: boolean) => {
+		setDataset((currentDataset) => {
+			const targetNode = currentDataset.nodeById.get(nodeId);
+			if (!targetNode) {
+				return currentDataset;
+			}
+
+			const updatedNode: GraphNode =
+				fixed ?
+					{
+						...targetNode,
+						x: position.x,
+						y: position.y,
+						fx: position.x,
+						fy: position.y,
+					}
+				:	{
+						...targetNode,
+						x: position.x,
+						y: position.y,
+						fx: undefined,
+						fy: undefined,
+					};
+
+			const nextNodes = currentDataset.graphData.nodes.map((node) => (node.id === nodeId ? updatedNode : node));
+
+			return {
+				...currentDataset,
+				graphData: {
+					...currentDataset.graphData,
+					nodes: nextNodes,
+				},
+				nodeById: new Map(nextNodes.map((node) => [node.id, node])),
+			};
+		});
+	}, []);
+
+	const anchorSelectionInDataset = useCallback(
+		(currentDataset: GraphDataset, previousAnchorNodeId: string | null, nextAnchorNodeId: string | null, anchorPosition?: PointPosition | null): GraphDataset => {
+			let didChange = false;
+			const nextNodes = currentDataset.graphData.nodes.map((node) => {
+				if (nextAnchorNodeId && node.id === nextAnchorNodeId) {
+					const lockedPosition = anchorPosition ?? {
+						x: node.x ?? node.fx ?? 0,
+						y: node.y ?? node.fy ?? 0,
+					};
+
+					if (node.x === lockedPosition.x && node.y === lockedPosition.y && node.fx === lockedPosition.x && node.fy === lockedPosition.y) {
+						return node;
+					}
+
+					didChange = true;
+					return {
+						...node,
+						x: lockedPosition.x,
+						y: lockedPosition.y,
+						fx: lockedPosition.x,
+						fy: lockedPosition.y,
+					};
+				}
+
+				if (previousAnchorNodeId && previousAnchorNodeId !== nextAnchorNodeId && node.id === previousAnchorNodeId && (node.fx !== undefined || node.fy !== undefined)) {
+					didChange = true;
+					// eslint-disable-next-line @typescript-eslint/no-unused-vars
+					const { fx: _fx, fy: _fy, ...rest } = node;
+					return rest;
+				}
+
+				return node;
+			});
+
+			if (!didChange) {
+				return currentDataset;
+			}
+
+			return {
+				...currentDataset,
+				graphData: {
+					...currentDataset.graphData,
+					nodes: nextNodes,
+				},
+				nodeById: new Map(nextNodes.map((node) => [node.id, node])),
+			};
+		},
+		[],
+	);
+
+	const flushPendingDragPosition = useCallback(() => {
+		dragAnimationFrameRef.current = null;
+		const pendingDragPosition = pendingDragPositionRef.current;
+		if (!pendingDragPosition) {
+			return;
+		}
+
+		updateNodePosition(pendingDragPosition.nodeId, pendingDragPosition.position, pendingDragPosition.fixed);
+	}, [updateNodePosition]);
+
+	const scheduleNodePositionUpdate = useCallback(
+		(nodeId: string, position: PointPosition, fixed: boolean) => {
+			pendingDragPositionRef.current = { nodeId, position, fixed };
+			if (dragAnimationFrameRef.current !== null) {
+				return;
+			}
+
+			dragAnimationFrameRef.current = window.requestAnimationFrame(flushPendingDragPosition);
+		},
+		[flushPendingDragPosition],
+	);
+
+	const getSpacePositionFromPointer = useCallback((clientX: number, clientY: number): PointPosition | null => {
+		const graph = graphRef.current;
+		const graphSurface = graphSurfaceRef.current;
+		if (!graph || !graphSurface) {
+			return null;
+		}
+
+		const bounds = graphSurface.getBoundingClientRect();
+		const relativePosition: [number, number] = [clientX - bounds.left, clientY - bounds.top];
+		const spacePosition = graph.screenToSpacePosition(relativePosition);
+		if (!spacePosition) {
+			return null;
+		}
+
+		return {
+			x: spacePosition[0],
+			y: spacePosition[1],
+		};
+	}, []);
+
+	const clearHoldToDragTimer = useCallback(() => {
+		if (holdToDragTimerRef.current !== null) {
+			window.clearTimeout(holdToDragTimerRef.current);
+			holdToDragTimerRef.current = null;
+		}
+	}, []);
+
+	const finishDragInteraction = useCallback(
+		(candidate: DragCandidate, wasCanceled: boolean) => {
+			clearHoldToDragTimer();
+
+			if (candidate.dragActive) {
+				const finalPosition = getSpacePositionFromPointer(candidate.lastClientX, candidate.lastClientY);
+				if (finalPosition) {
+					scheduleNodePositionUpdate(candidate.nodeId, finalPosition, false);
+				}
+				suppressNextCanvasClickRef.current = true;
+				graphRef.current?.start(0.1);
+				dragCandidateRef.current = null;
+				return;
+			}
+
+			const deltaX = candidate.lastClientX - candidate.startClientX;
+			const deltaY = candidate.lastClientY - candidate.startClientY;
+			const movedDistance = Math.hypot(deltaX, deltaY);
+
+			if (!wasCanceled && movedDistance <= CLICK_MOVE_TOLERANCE_PX) {
+				suppressNextCanvasClickRef.current = true;
+				handleNodeSelectionRef.current(candidate.nodeId);
+			}
+
+			dragCandidateRef.current = null;
+		},
+		[clearHoldToDragTimer, getSpacePositionFromPointer, scheduleNodePositionUpdate],
 	);
 
 	const applyExpansionLayout = useCallback(
@@ -411,14 +636,10 @@ export default function GraphView() {
 			return;
 		}
 
-		if (selectedNodeId) {
-			centerOnNode(selectedNodeId);
-			return;
+		if (!selectedNodeId) {
+			graph.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
 		}
-
-		graph.unselectAllPoints();
-		graph.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
-	}, [centerOnNode, dataset.viewport.fitViewDurationMs, selectedNodeId, visibleGraph.links.length, visibleGraph.nodes.length]);
+	}, [dataset.viewport.fitViewDurationMs, selectedNodeId, visibleGraph.links.length, visibleGraph.nodes.length]);
 
 	useEffect(() => {
 		const graph = graphRef.current;
@@ -435,15 +656,37 @@ export default function GraphView() {
 		const addedLinks = Math.max(0, visibleGraph.links.length - previousGraphSize.links);
 
 		if (addedNodes > 0 || addedLinks > 0) {
-			const expansionImpulse = Math.min(0.52, dataset.force.simulationImpulse + addedNodes * 0.018 + addedLinks * 0.008);
+			previousVisibleGraphSizeRef.current = {
+				nodes: visibleGraph.nodes.length,
+				links: visibleGraph.links.length,
+			};
+
+			// Reheat the simulation so new/updated nodes settle organically into the existing layout
+			const isInitialGraphLoad = previousGraphSize.nodes === 0 && previousGraphSize.links === 0;
+			const expansionImpulse = isInitialGraphLoad ? dataset.force.manualReheatImpulse : Math.min(0.34, dataset.force.simulationImpulse + addedNodes * 0.01 + addedLinks * 0.004);
 			graph.start(expansionImpulse);
+
+			return;
 		}
 
 		previousVisibleGraphSizeRef.current = {
 			nodes: visibleGraph.nodes.length,
 			links: visibleGraph.links.length,
 		};
-	}, [dataset.force.simulationImpulse, visibleGraph.links.length, visibleGraph.nodes.length]);
+	}, [dataset, cosmographGraph.points, visibleGraph.links.length, visibleGraph.nodes.length]);
+
+	useEffect(() => {
+		if (hasAutoReflowedOnLoadRef.current) {
+			return;
+		}
+
+		if (visibleGraph.nodes.length <= 1 || !graphRef.current) {
+			return;
+		}
+
+		hasAutoReflowedOnLoadRef.current = true;
+		nudgeGraphLayout();
+	}, [nudgeGraphLayout, visibleGraph.nodes.length]);
 
 	const handleNodeSelection = useCallback(
 		(nodeId: string) => {
@@ -454,18 +697,32 @@ export default function GraphView() {
 
 			const hydration = hydrateNodeRelationships(dataset, typedNode.id);
 			const nextDataset = hydration.dataset;
+			const nextVisibleNodeIds = new Set(nextDataset.graphData.nodes.map((node) => node.id));
+			const hasExpansion = hydration.addedNodeCount > 0 || hydration.addedLinkCount > 0 || nextDataset !== dataset;
 
-			const nextVisibleNodeIds = new Set(visibleNodeIds);
-			for (const expandedNodeId of expandSelection(nextDataset, typedNode.id)) {
-				nextVisibleNodeIds.add(expandedNodeId);
+			if (hasExpansion) {
+				const anchorPosition = renderedNodePositionById.get(typedNode.id) ?? {
+					x: typedNode.x ?? typedNode.fx ?? 0,
+					y: typedNode.y ?? typedNode.fy ?? 0,
+				};
+				const positionedDataset = applyExpansionLayout(visibleNodeIds, nextVisibleNodeIds, nextDataset, typedNode.id);
+				const anchoredDataset = anchorSelectionInDataset(positionedDataset, selectedAnchorNodeIdRef.current, typedNode.id, anchorPosition);
+				selectedAnchorNodeIdRef.current = typedNode.id;
+
+				if (anchoredDataset !== dataset) {
+					setDataset(anchoredDataset);
+				}
+			} else if (selectedAnchorNodeIdRef.current && selectedAnchorNodeIdRef.current !== typedNode.id) {
+				const releasedDataset = anchorSelectionInDataset(dataset, selectedAnchorNodeIdRef.current, null, null);
+				selectedAnchorNodeIdRef.current = null;
+				if (releasedDataset !== dataset) {
+					setDataset(releasedDataset);
+				}
 			}
 
-			const positionedDataset = applyExpansionLayout(visibleNodeIds, nextVisibleNodeIds, nextDataset, typedNode.id);
-			if (positionedDataset !== dataset) {
-				setDataset(positionedDataset);
+			if (!areNodeIdSetsEqual(visibleNodeIds, nextVisibleNodeIds)) {
+				setVisibleNodeIds(nextVisibleNodeIds);
 			}
-
-			setVisibleNodeIds(nextVisibleNodeIds);
 			setSelectedNodeId(typedNode.id);
 			setMenuOpen(true);
 			setShowInfo(true);
@@ -475,16 +732,188 @@ export default function GraphView() {
 			appendLog(
 				hydration.addedNodeCount > 0 ? `Selected ${typedNode.title} and expanded ${hydration.addedNodeCount} detail-derived relationships.` : `Selected ${typedNode.title}`,
 			);
+			window.requestAnimationFrame(() => {
+				nudgeGraphLayout();
+			});
 		},
-		[appendLog, applyExpansionLayout, dataset, hydrateNodeRelationships, visibleNodeIds],
+		[anchorSelectionInDataset, appendLog, applyExpansionLayout, dataset, hydrateNodeRelationships, nudgeGraphLayout, renderedNodePositionById, visibleNodeIds],
+	);
+
+	useEffect(() => {
+		handleNodeSelectionRef.current = handleNodeSelection;
+	}, [handleNodeSelection]);
+
+	const handlePointClick = useCallback(
+		(index: number) => {
+			if (suppressNextCanvasClickRef.current) {
+				suppressNextCanvasClickRef.current = false;
+				return;
+			}
+
+			const node = cosmographGraph.points[index];
+			if (node) {
+				handleNodeSelection(node.id);
+			}
+		},
+		[cosmographGraph.points, handleNodeSelection],
+	);
+
+	const handleLabelClick = useCallback(
+		(index: number) => {
+			if (suppressNextCanvasClickRef.current) {
+				suppressNextCanvasClickRef.current = false;
+				return;
+			}
+
+			const node = cosmographGraph.points[index];
+			if (node) {
+				handleNodeSelection(node.id);
+			}
+		},
+		[cosmographGraph.points, handleNodeSelection],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
+		if (suppressNextCanvasClickRef.current) {
+			suppressNextCanvasClickRef.current = false;
+			return;
+		}
+
+		const anchoredDataset = anchorSelectionInDataset(dataset, selectedAnchorNodeIdRef.current, null, null);
+		selectedAnchorNodeIdRef.current = null;
+		if (anchoredDataset !== dataset) {
+			setDataset(anchoredDataset);
+		}
+
 		setSelectedNodeId(null);
 		setStatusMessage('Highlight cleared.');
-		graphRef.current?.unselectAllPoints();
 		graphRef.current?.fitView(dataset.viewport.fitViewDurationMs, COSMOGRAPH_FIT_VIEW_PADDING);
-	}, [dataset.viewport.fitViewDurationMs]);
+	}, [anchorSelectionInDataset, dataset]);
+
+	const handlePointMouseOver = useCallback(
+		(index: number) => {
+			const node = cosmographGraph.points[index];
+			if (!node) {
+				return;
+			}
+
+			hoveredPointIndexRef.current = index;
+			hoveredPointIdRef.current = node.id;
+		},
+		[cosmographGraph.points],
+	);
+
+	const handlePointMouseOut = useCallback(() => {
+		if (dragCandidateRef.current?.dragActive) {
+			return;
+		}
+
+		hoveredPointIndexRef.current = null;
+		hoveredPointIdRef.current = null;
+	}, []);
+
+	const handleGraphPointerDown = useCallback(
+		(event: React.PointerEvent<HTMLDivElement>) => {
+			if (event.button !== 0) {
+				return;
+			}
+
+			const hoveredPointId = hoveredPointIdRef.current;
+			const hoveredPointIndex = hoveredPointIndexRef.current;
+			if (!hoveredPointId || hoveredPointIndex === null) {
+				return;
+			}
+
+			event.currentTarget.setPointerCapture(event.pointerId);
+
+			const nextCandidate: DragCandidate = {
+				pointerId: event.pointerId,
+				nodeId: hoveredPointId,
+				nodeIndex: hoveredPointIndex,
+				startClientX: event.clientX,
+				startClientY: event.clientY,
+				lastClientX: event.clientX,
+				lastClientY: event.clientY,
+				dragActive: false,
+			};
+
+			dragCandidateRef.current = nextCandidate;
+			clearHoldToDragTimer();
+			holdToDragTimerRef.current = window.setTimeout(() => {
+				const activeCandidate = dragCandidateRef.current;
+				if (!activeCandidate || activeCandidate.pointerId !== event.pointerId) {
+					return;
+				}
+
+				activeCandidate.dragActive = true;
+				suppressNextCanvasClickRef.current = true;
+				const startDragPosition = getSpacePositionFromPointer(activeCandidate.lastClientX, activeCandidate.lastClientY);
+				if (startDragPosition) {
+					scheduleNodePositionUpdate(activeCandidate.nodeId, startDragPosition, true);
+				}
+			}, HOLD_TO_DRAG_MS);
+		},
+		[clearHoldToDragTimer, getSpacePositionFromPointer, scheduleNodePositionUpdate],
+	);
+
+	const handleGraphPointerMove = useCallback(
+		(event: React.PointerEvent<HTMLDivElement>) => {
+			const activeCandidate = dragCandidateRef.current;
+			if (!activeCandidate || activeCandidate.pointerId !== event.pointerId) {
+				return;
+			}
+
+			activeCandidate.lastClientX = event.clientX;
+			activeCandidate.lastClientY = event.clientY;
+
+			if (!activeCandidate.dragActive) {
+				return;
+			}
+
+			const nextPosition = getSpacePositionFromPointer(event.clientX, event.clientY);
+			if (!nextPosition) {
+				return;
+			}
+
+			scheduleNodePositionUpdate(activeCandidate.nodeId, nextPosition, true);
+		},
+		[getSpacePositionFromPointer, scheduleNodePositionUpdate],
+	);
+
+	const handleGraphPointerUp = useCallback(
+		(event: React.PointerEvent<HTMLDivElement>) => {
+			const activeCandidate = dragCandidateRef.current;
+			if (!activeCandidate || activeCandidate.pointerId !== event.pointerId) {
+				return;
+			}
+
+			activeCandidate.lastClientX = event.clientX;
+			activeCandidate.lastClientY = event.clientY;
+			finishDragInteraction(activeCandidate, false);
+		},
+		[finishDragInteraction],
+	);
+
+	const handleGraphPointerCancel = useCallback(
+		(event: React.PointerEvent<HTMLDivElement>) => {
+			const activeCandidate = dragCandidateRef.current;
+			if (!activeCandidate || activeCandidate.pointerId !== event.pointerId) {
+				return;
+			}
+
+			finishDragInteraction(activeCandidate, true);
+		},
+		[finishDragInteraction],
+	);
+
+	useEffect(() => {
+		return () => {
+			clearHoldToDragTimer();
+			if (dragAnimationFrameRef.current !== null) {
+				window.cancelAnimationFrame(dragAnimationFrameRef.current);
+			}
+		};
+	}, [clearHoldToDragTimer]);
 
 	const handleSearchSubmit = useCallback(
 		async (event: React.FormEvent<HTMLFormElement>) => {
@@ -525,23 +954,43 @@ export default function GraphView() {
 				const mergedDataset = mergeGraphDataset(dataset, { nodes: remoteResult.nodes, links: remoteResult.links });
 				const hydration = hydrateNodeRelationships(mergedDataset, remoteResult.primaryMatchId);
 				const nextDataset = hydration.dataset;
-				const nextVisibleNodeIds = new Set(visibleNodeIds);
-				for (const matchedNodeId of remoteResult.matchedNodeIds) {
-					for (const expandedNodeId of expandSelection(nextDataset, matchedNodeId)) nextVisibleNodeIds.add(expandedNodeId);
-				}
-				const positionedDataset = applyExpansionLayout(visibleNodeIds, nextVisibleNodeIds, nextDataset, remoteResult.primaryMatchId);
+				const searchResultNodeIds = new Set(remoteResult.nodes.map((node) => node.id));
+				const hydratedNodeIds = nextDataset.graphData.nodes.filter((node) => !mergedDataset.nodeById.has(node.id)).map((node) => node.id);
+				const nextVisibleNodeIds = new Set([...searchResultNodeIds, ...hydratedNodeIds]);
+				const isolatedBaseVisibleNodeIds = new Set([remoteResult.primaryMatchId]);
+				const positionedDataset = applyExpansionLayout(isolatedBaseVisibleNodeIds, nextVisibleNodeIds, nextDataset, remoteResult.primaryMatchId);
+				const primaryNode = nextDataset.nodeById.get(remoteResult.primaryMatchId);
+				const anchorPosition =
+					primaryNode ?
+						(renderedNodePositionById.get(remoteResult.primaryMatchId) ?? {
+							x: primaryNode.x ?? primaryNode.fx ?? 0,
+							y: primaryNode.y ?? primaryNode.fy ?? 0,
+						})
+					:	null;
+				const anchoredDataset =
+					anchorPosition ? anchorSelectionInDataset(positionedDataset, selectedAnchorNodeIdRef.current, remoteResult.primaryMatchId, anchorPosition) : positionedDataset;
+				selectedAnchorNodeIdRef.current = anchorPosition ? remoteResult.primaryMatchId : selectedAnchorNodeIdRef.current;
 
-				setDataset(positionedDataset);
-				setVisibleNodeIds(nextVisibleNodeIds);
+				setDataset(anchoredDataset);
+				if (!areNodeIdSetsEqual(visibleNodeIds, nextVisibleNodeIds)) {
+					setVisibleNodeIds(nextVisibleNodeIds);
+				}
 				setSelectedNodeId(remoteResult.primaryMatchId);
 				setMenuOpen(true);
 				setShowInfo(true);
-				setStatusMessage(hydration.addedNodeCount > 0 ? `${remoteResult.message} Added ${hydration.addedNodeCount} detail-derived nodes.` : remoteResult.message);
+				setStatusMessage(
+					hydration.addedNodeCount > 0 ?
+						`${remoteResult.message} Showing an isolated cache/API result view with ${hydration.addedNodeCount} detail-derived nodes.`
+					:	`${remoteResult.message} Showing an isolated cache/API result view.`,
+				);
 				appendLog(
 					remoteResult.source === 'local' ?
-						`Loaded ${remoteResult.matchedNodeIds.length} cached node(s) for “${normalizedQuery}”.`
-					:	`Fetched ${remoteResult.matchedNodeIds.length} upstream node(s) for “${normalizedQuery}” and saved them locally.`,
+						`Loaded ${remoteResult.matchedNodeIds.length} cached node(s) for “${normalizedQuery}” and isolated them from the current canvas view.`
+					:	`Fetched ${remoteResult.matchedNodeIds.length} upstream node(s) for “${normalizedQuery}”, saved them locally, and isolated them from the current canvas view.`,
 				);
+				window.requestAnimationFrame(() => {
+					nudgeGraphLayout();
+				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : 'Unknown search failure.';
 				setStatusMessage(`Unable to fetch cached/upstream data for “${normalizedQuery}”.`);
@@ -551,11 +1000,31 @@ export default function GraphView() {
 				searchInputRef.current?.focus();
 			}
 		},
-		[appendLog, applyExpansionLayout, dataset, hydrateNodeRelationships, isSearchingUpstream, searchQuery, visibleNodeIds],
+		[
+			anchorSelectionInDataset,
+			appendLog,
+			applyExpansionLayout,
+			dataset,
+			hydrateNodeRelationships,
+			isSearchingUpstream,
+			nudgeGraphLayout,
+			renderedNodePositionById,
+			searchQuery,
+			visibleNodeIds,
+		],
 	);
 
 	const handleResetSession = useCallback(() => {
-		setVisibleNodeIds(new Set(dataset.initialVisibleNodeIds));
+		const nextDataset = anchorSelectionInDataset(dataset, selectedAnchorNodeIdRef.current, null, null);
+		selectedAnchorNodeIdRef.current = null;
+		if (nextDataset !== dataset) {
+			setDataset(nextDataset);
+		}
+
+		const resetVisibleNodeIds = new Set(dataset.initialVisibleNodeIds);
+		if (!areNodeIdSetsEqual(visibleNodeIds, resetVisibleNodeIds)) {
+			setVisibleNodeIds(resetVisibleNodeIds);
+		}
 		setSelectedNodeId(null);
 		setTraceMode(false);
 		setShowInfo(true);
@@ -564,13 +1033,13 @@ export default function GraphView() {
 		setSearchQuery('');
 		setStatusMessage('Session reset. Select a node to explore the graph.');
 		appendLog('Reset the local graph session.');
-	}, [appendLog, dataset]);
+	}, [anchorSelectionInDataset, appendLog, dataset, visibleNodeIds]);
 
 	const handleReflow = useCallback(() => {
-		graphRef.current?.start(dataset.force.manualReheatImpulse);
+		nudgeGraphLayout();
 		setStatusMessage('Layout gently nudged.');
 		appendLog('Reflowed the visible layout.');
-	}, [appendLog, dataset.force.manualReheatImpulse]);
+	}, [appendLog, nudgeGraphLayout]);
 
 	if (!CosmographCanvas) {
 		return <div className='flex h-screen items-center justify-center bg-slate-950 text-white'>Loading Cosmograph...</div>;
@@ -757,7 +1226,7 @@ export default function GraphView() {
 													{section.items?.map((item) => (
 														<div
 															className='grid grid-cols-[120px_1fr] gap-3 py-1 text-sm'
-															key={`${section.title}-${item.label}`}>
+															key={`${selectedNode.id}-${section.title}-${item.label}-${item.value}`}>
 															<div className='text-slate-400'>{item.label}</div>
 															<div className='text-slate-100'>
 																{item.href ?
@@ -807,7 +1276,13 @@ export default function GraphView() {
 				:	null}
 
 				<main className='relative flex-1'>
-					<div className='absolute inset-0'>
+					<div
+						className='absolute inset-0'
+						onPointerCancel={handleGraphPointerCancel}
+						onPointerDown={handleGraphPointerDown}
+						onPointerMove={handleGraphPointerMove}
+						onPointerUp={handleGraphPointerUp}
+						ref={graphSurfaceRef}>
 						<CosmographCanvas
 							ref={graphRef}
 							className='h-full w-full'
@@ -831,6 +1306,11 @@ export default function GraphView() {
 							pointSizeByFn={(value: unknown) => Number(value)}
 							pointLabelBy='label'
 							pointLabelWeightBy='graphLabelWeight'
+							selectPointOnClick={false}
+							selectPointOnLabelClick={false}
+							focusPointOnClick={false}
+							focusPointOnLabelClick={false}
+							enableDrag={false}
 							linkColorBy='graphColor'
 							linkColorByFn={(value: unknown) => String(value)}
 							linkWidthBy='graphWidth'
@@ -856,22 +1336,14 @@ export default function GraphView() {
 							simulationFriction={dataset.force.simulationFriction}
 							simulationImpulse={dataset.force.simulationImpulse}
 							pointLabelColor={dataset.visual.nodeLabelColor}
-							pointLabelFontSize={13}
+							pointLabelFontSize={15}
 							pointGreyoutOpacity={1}
 							focusedPointRingColor={dataset.visual.focusedPointRingColor}
 							hoveredPointRingColor={dataset.visual.hoveredPointRingColor}
-							onPointClick={(index) => {
-								const node = cosmographGraph.points[index];
-								if (node) {
-									handleNodeSelection(node.id);
-								}
-							}}
-							onLabelClick={(index) => {
-								const node = cosmographGraph.points[index];
-								if (node) {
-									handleNodeSelection(node.id);
-								}
-							}}
+							onPointMouseOut={handlePointMouseOut}
+							onPointMouseOver={handlePointMouseOver}
+							onPointClick={handlePointClick}
+							onLabelClick={handleLabelClick}
 							onBackgroundClick={handleBackgroundClick}
 						/>
 					</div>
