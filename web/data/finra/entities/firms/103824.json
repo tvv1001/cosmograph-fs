@@ -1,0 +1,81 @@
+{
+  "id": "firm-103824",
+  "kind": "firm",
+  "crd": "103824",
+  "sec": "8-52316",
+  "sourceSystems": [
+    "finra",
+    "sec"
+  ],
+  "updatedAt": "2026-05-20T18:51:01.134Z",
+  "node": {
+    "id": "firm-103824",
+    "label": "Thornton Prior Llc",
+    "kind": "firm",
+    "degreeHint": 0,
+    "size": 10,
+    "isHub": true,
+    "title": "Thornton Prior Llc",
+    "identifierLine": "CRD#: 103824 / SEC#: 8-52316",
+    "badges": [
+      {
+        "label": "Inactive",
+        "tone": "warning"
+      },
+      {
+        "label": "Disclosures 0",
+        "tone": "neutral"
+      }
+    ],
+    "marker": "B",
+    "summary": "Inactive firm returned from upstream lookup.",
+    "subtitle": "Bradshaw, James Michael",
+    "searchText": "thornton prior llc bradshaw, james michael 103824 8-52316 ",
+    "externalLinks": [
+      {
+        "label": "FINRA Summary",
+        "href": "https://brokercheck.finra.org/firm/summary/103824"
+      },
+      {
+        "label": "SEC Detail (JSON)",
+        "href": "https://api.adviserinfo.sec.gov/search/firm/103824?wt=json"
+      }
+    ],
+    "detailSections": [
+      {
+        "title": "Registration",
+        "items": [
+          {
+            "label": "CRD",
+            "value": "103824"
+          },
+          {
+            "label": "ID source check",
+            "value": "FINRA=true · SEC=true"
+          },
+          {
+            "label": "Scope",
+            "value": "Inactive"
+          },
+          {
+            "label": "SEC identifier",
+            "value": "8-52316"
+          },
+          {
+            "label": "Branch count",
+            "value": "0"
+          }
+        ]
+      },
+      {
+        "title": "Other Names",
+        "items": [
+          {
+            "label": "Alias",
+            "value": "Bradshaw, James Michael"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -16,12 +16,127 @@ This file was imported from another application and is **not active architecture
 Current verified state of `Cosmograph-fs`:
 
 - The app code lives under `web/`, not `src/` at the repo root.
+- There is now a typed UI-facing regulator schema registry at `web/src/lib/regulator-schemas.ts`.
 - There are currently **no** FINRA/SEC API routes in this repo.
 - There is currently **no** local FINRA entity store, crawler pipeline, or search index.
 - There is currently **no** Redis dependency, Redis client, or Redis environment configuration in this repo.
 - The current app is a client-rendered force-graph demo, not a FINRA-backed data application.
 
 Treat this file as a **planning note** rather than an active implementation instruction source until the future FINRA/SEC app actually exists in this repo.
+
+## Current regulator schema source of truth
+
+The current repo **does** contain a typed regulator copy/schema layer for UI text and cross-site wording:
+
+- `web/src/lib/regulator-schemas.ts`
+
+Use that file as the source of truth for regulator-specific labels until real FINRA/SEC API-backed models exist.
+
+Current exported types and values:
+
+- `RegulatorId = 'finra' | 'sec'`
+- `ScopeLabels`
+- `CrossSiteLabels`
+- `RegulatorSchema`
+- `REGULATOR_SCHEMAS`
+- `DEFAULT_REGULATOR_ID`
+- `DEFAULT_REGULATOR_SCHEMA`
+- `getRegulatorSchema(regulatorId)`
+
+Current default:
+
+- `DEFAULT_REGULATOR_ID` is `finra`
+- `web/src/app/layout.tsx` reads `DEFAULT_REGULATOR_SCHEMA.home.title` for page metadata
+
+## Current schema shape
+
+Each `RegulatorSchema` currently includes these sections:
+
+- `home`
+  - `title`
+- `scope`
+  - `firm`
+  - `individual`
+- `sanctions`
+  - `Record<string, string>` containing FINRA and SEC sanction-message copy
+- `search-filters`
+  - `radius`
+  - `experience`
+  - `status.active`
+  - `status.previous`
+  - `status.barred`
+  - `employer-search-scope.include`
+- `search-results`
+  - `barred`
+  - `suspended`
+  - `limited`
+  - `not-registered`
+  - `x-site-description`
+  - `x-site-destination`
+  - `x-site-link-a`
+  - `x-site-link-b`
+  - `x-site-link-short`
+  - `x-site-source`
+  - `x-site-tooltip`
+- `individual-details-page`
+  - same shape as `search-results`
+
+## Current FINRA and SEC schema details
+
+The current schema registry stores two parallel UI-copy definitions:
+
+### FINRA schema
+
+- `home.title`: `BrokerCheck - Find a broker, investment or financial advisor`
+- source label in cross-site content: `BrokerCheck`
+- cross-site destination in search/detail copy: `SEC Site`
+- `search-filters.status.barred`: `Barred/Limited`
+- previous-registration abbreviations use `PR` for both firm and individual previous-registration labels
+
+### SEC schema
+
+- `home.title`: `IAPD - Investment Adviser Public Disclosure - Homepage`
+- source label in cross-site content: `IAPD`
+- cross-site destination in search/detail copy: `BrokerCheck`
+- `search-filters.status.barred`: `Barred/Limited by FINRA or the SEC`
+- previous-registration abbreviations stay aligned to channel labels (`B` / `IA`) instead of `PR`
+- `individual-details-page.barred`: `BARRED BY FINRA OR THE SEC`
+
+### Shared details across both schemas
+
+- Both schemas define the same top-level keys and nested structure.
+- Both schemas currently carry the same sanction-message key set under `sanctions`.
+- Both schemas include cross-site tooltip text describing complaints, arbitrations, regulatory actions, employment terminations, bankruptcies, and judicial proceedings.
+
+## How to maintain schema guidance
+
+When working on future FINRA/SEC integrations, keep these rules aligned with `web/src/lib/regulator-schemas.ts`:
+
+- Do not duplicate regulator copy in route handlers, prompts, or docs if the value already exists in the schema registry.
+- If UI wording changes for BrokerCheck or IAPD, update the schema registry first, then update docs/instructions that reference the changed copy.
+- If future API normalization introduces strongly typed upstream models, keep `RegulatorSchema` focused on presentation/copy concerns unless the repo intentionally promotes it into a broader domain contract.
+- If a future FINRA/SEC app adds server routes, document clearly whether each field comes from:
+  - static schema copy in `web/src/lib/regulator-schemas.ts`
+  - normalized local data under `web/data/finra/`
+  - live upstream FINRA/SEC payloads
+
+## Boundary between schema copy and canonical entity data
+
+The current regulator schema file is **not** a canonical entity data model.
+
+It should currently be treated as:
+
+- UI copy and regulator-label metadata
+- search/filter label definitions
+- cross-site wording between BrokerCheck and IAPD views
+- sanction-message text templates
+
+It should **not** be treated as:
+
+- a person or firm record shape
+- an upstream FINRA/SEC response contract
+- a replacement for future canonical entity files under `web/data/finra/`
+- a Redis cache schema
 
 ## Chosen local canonical data structure
 

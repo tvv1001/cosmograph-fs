@@ -1,6 +1,8 @@
 export type GraphNodeKind = 'firm' | 'individual';
 
-export type RelationshipKind = 'employment' | 'control' | 'peer' | 'disclosure';
+export type IdSourceFlag = 'finra only' | 'sec only' | 'both finra_sec';
+
+export type RelationshipKind = 'employment' | 'previous-employment' | 'control' | 'peer' | 'disclosure';
 
 export type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'info';
 
@@ -35,6 +37,7 @@ export interface GraphNode {
 	isHub: boolean;
 	title: string;
 	identifierLine: string;
+	sourceFlag?: IdSourceFlag;
 	badges: EntityBadge[];
 	marker: string;
 	summary: string;
@@ -49,6 +52,8 @@ export interface GraphNode {
 	fx?: number;
 	fy?: number;
 }
+
+type RelationshipSectionKind = 'employment' | 'previous-employment' | 'control' | null;
 
 export interface GraphLink {
 	source: string | GraphNode;
@@ -122,6 +127,17 @@ export interface SearchRevealResult {
 	matchedNodeIds: string[];
 	primaryMatchId: string | null;
 	addedCount: number;
+	message: string;
+}
+
+export interface RemoteGraphSearchResult {
+	query: string;
+	source: 'local' | 'external' | 'none';
+	matchedNodeIds: string[];
+	primaryMatchId: string | null;
+	nodes: GraphNode[];
+	links: GraphLink[];
+	addedToLocal: boolean;
 	message: string;
 }
 
@@ -279,8 +295,12 @@ export function createGraphDataset(): GraphDataset {
 		visual: DEFAULT_VISUAL_CONFIG,
 		viewport: DEFAULT_VIEWPORT_CONFIG,
 		legend: [
-			{ label: 'Firm', color: DEFAULT_VISUAL_CONFIG.nodeColors.firm, description: 'Broker-dealers and related firms' },
-			{ label: 'Person', color: DEFAULT_VISUAL_CONFIG.nodeColors.individual, description: 'Registered people and officers' },
+			{ label: 'Firm', color: DEFAULT_VISUAL_CONFIG.nodeColors.firm, description: 'Broker-dealers, advisers, and related firms' },
+			{ label: 'Person', color: DEFAULT_VISUAL_CONFIG.nodeColors.individual, description: 'Registered people, officers, and owners' },
+			{ label: 'Current emp/reg', color: 'rgba(96, 165, 250, 0.82)', description: 'Current employment or registration relationship' },
+			{ label: 'Previous emp/reg', color: 'rgba(203, 213, 225, 0.42)', description: 'Previous employment or prior registration relationship' },
+			{ label: 'Controls', color: 'rgba(248, 113, 113, 0.92)', description: 'Control positions, direct owners, and executive officers' },
+			{ label: 'Has disclosures', color: 'rgba(251, 191, 36, 0.72)', description: 'Disclosure-related relationship or warning signal' },
 			{ label: 'Highlighted path', color: DEFAULT_VISUAL_CONFIG.activeLinkColor, description: 'Active selection and nearby links' },
 		],
 		initialNodeId: INITIAL_FIRM_ID,
@@ -360,7 +380,307 @@ export function getKindLabel(kind: GraphNodeKind): string {
 	return kind === 'firm' ? 'FIRM' : 'INDIVIDUAL';
 }
 
+export function getIdSourceFlag(hasFinraSource: boolean, hasSecSource: boolean): IdSourceFlag | undefined {
+	if (hasFinraSource && hasSecSource) {
+		return 'both finra_sec';
+	}
+	if (hasFinraSource) {
+		return 'finra only';
+	}
+	if (hasSecSource) {
+		return 'sec only';
+	}
+	return undefined;
+}
+
+export function inferRelatedGraphFromDetails(dataset: GraphDataset, nodeId: string): { nodes: GraphNode[]; links: GraphLink[] } {
+	const sourceNode = dataset.nodeById.get(nodeId);
+	if (!sourceNode) {
+		return { nodes: [], links: [] };
+	}
+
+	const nextNodes = new Map<string, GraphNode>();
+	const nextLinks = new Map<string, GraphLink>();
+
+	for (const section of sourceNode.detailSections) {
+		const sectionRelationshipKind = getSectionRelationshipKind(section.title);
+		if (!sectionRelationshipKind || !section.items?.length) {
+			continue;
+		}
+
+		for (const item of section.items) {
+			const candidate = createRelatedNodeCandidate(dataset, sourceNode, section.title, sectionRelationshipKind, item);
+			if (!candidate) {
+				continue;
+			}
+
+			if (!dataset.nodeById.has(candidate.node.id)) {
+				nextNodes.set(candidate.node.id, candidate.node);
+			}
+
+			if (!hasLinkWithIdentity(dataset.graphData.links, candidate.link)) {
+				nextLinks.set(getLinkIdentityKey(candidate.link), candidate.link);
+			}
+		}
+	}
+
+	return {
+		nodes: Array.from(nextNodes.values()),
+		links: Array.from(nextLinks.values()),
+	};
+}
+
+export function mergeGraphDataset(dataset: GraphDataset, payload: { nodes: GraphNode[]; links: GraphLink[] }): GraphDataset {
+	if (payload.nodes.length === 0 && payload.links.length === 0) {
+		return dataset;
+	}
+
+	const nodeById = new Map(dataset.graphData.nodes.map((node) => [node.id, node]));
+	for (const node of payload.nodes) {
+		const existingNode = nodeById.get(node.id);
+		nodeById.set(node.id, {
+			...existingNode,
+			...node,
+			externalLinks:
+				existingNode ?
+					Array.from(new Map([...existingNode.externalLinks, ...node.externalLinks].map((link) => [`${link.label}:${link.href}`, link])).values())
+				:	node.externalLinks,
+			detailSections: node.detailSections.length > 0 ? node.detailSections : (existingNode?.detailSections ?? []),
+			searchText: `${existingNode?.searchText ?? ''} ${node.searchText}`.trim().toLowerCase(),
+		});
+	}
+
+	const linkByKey = new Map(dataset.graphData.links.map((link) => [getLinkIdentityKey(link), link]));
+	for (const link of payload.links) linkByKey.set(getLinkIdentityKey(link), link);
+
+	const links = Array.from(linkByKey.values());
+	const degreeCounts = new Map<string, number>();
+	for (const link of links) {
+		const sourceId = getEndpointId(link.source);
+		const targetId = getEndpointId(link.target);
+		degreeCounts.set(sourceId, (degreeCounts.get(sourceId) ?? 0) + 1);
+		degreeCounts.set(targetId, (degreeCounts.get(targetId) ?? 0) + 1);
+	}
+
+	const nodes = Array.from(nodeById.values()).map((node) => {
+		const degreeHint = degreeCounts.get(node.id) ?? 0;
+		return {
+			...node,
+			degreeHint,
+			size: getNodeSize(degreeHint, node.isHub, node.kind),
+		};
+	});
+
+	return {
+		...dataset,
+		graphData: { nodes, links },
+		adjacency: createAdjacencyMap(links),
+		linksByNodeId: createLinksByNodeId(links),
+		nodeById: new Map(nodes.map((node) => [node.id, node])),
+	};
+}
+
+function getSectionRelationshipKind(sectionTitle: string): RelationshipSectionKind {
+	const normalizedTitle = sectionTitle.trim().toLowerCase();
+	if (/current employment|current emp\/reg|current registration/.test(normalizedTitle)) {
+		return 'employment';
+	}
+	if (/previous employment|previous emp\/reg|former employment|prior employment/.test(normalizedTitle)) {
+		return 'previous-employment';
+	}
+	if (/control positions|direct owners|executive officers|form bd/.test(normalizedTitle)) {
+		return 'control';
+	}
+	return null;
+}
+
+function createRelatedNodeCandidate(
+	dataset: GraphDataset,
+	sourceNode: GraphNode,
+	sectionTitle: string,
+	relationship: Exclude<RelationshipSectionKind, null>,
+	item: EntityDetailItem,
+): { node: GraphNode; link: GraphLink } | null {
+	const rawLabel = item.label.trim();
+	if (!rawLabel) {
+		return null;
+	}
+
+	const relatedKind = inferRelatedNodeKind(sourceNode, sectionTitle, rawLabel, item.value);
+	const existingNode = findExistingNodeByLabel(dataset, rawLabel, relatedKind);
+	const relatedNode = existingNode ?? createDerivedGraphNode(sourceNode, sectionTitle, relationship, rawLabel, item.value, relatedKind);
+	if (relatedNode.id === sourceNode.id) {
+		return null;
+	}
+
+	return {
+		node: relatedNode,
+		link: buildRelationshipLink(sourceNode, relatedNode, relationship),
+	};
+}
+
+function inferRelatedNodeKind(sourceNode: GraphNode, sectionTitle: string, rawLabel: string, rawValue: string): GraphNodeKind {
+	if (sourceNode.kind === 'individual') {
+		return 'firm';
+	}
+
+	if (/current employment|previous employment/.test(sectionTitle.toLowerCase())) {
+		return 'individual';
+	}
+
+	return looksLikeFirmEntity(rawLabel, rawValue) ? 'firm' : 'individual';
+}
+
+function findExistingNodeByLabel(dataset: GraphDataset, rawLabel: string, expectedKind: GraphNodeKind): GraphNode | null {
+	const comparableTarget = normalizeComparableLabel(formatDerivedDisplayLabel(rawLabel, expectedKind));
+	for (const node of dataset.graphData.nodes) {
+		if (node.kind !== expectedKind) {
+			continue;
+		}
+
+		if (normalizeComparableLabel(node.label) === comparableTarget) {
+			return node;
+		}
+
+		if (node.subtitle && normalizeComparableLabel(node.subtitle).includes(comparableTarget)) {
+			return node;
+		}
+	}
+
+	return null;
+}
+
+function createDerivedGraphNode(sourceNode: GraphNode, sectionTitle: string, relationship: RelationshipKind, rawLabel: string, rawValue: string, kind: GraphNodeKind): GraphNode {
+	const displayLabel = formatDerivedDisplayLabel(rawLabel, kind);
+	const identifierSuffix = slugify(`${sourceNode.id}-${sectionTitle}-${rawLabel}-${relationship}`);
+	const isStub = true;
+	const isInactive = relationship === 'previous-employment' || /inactive|terminated|previous/i.test(rawValue);
+	const badges: EntityBadge[] = [
+		{ label: isStub ? 'Stub (detail-derived)' : 'Linked entity', tone: 'info' },
+		{ label: isInactive ? 'Inactive / Previous' : 'Relationship discovered', tone: isInactive ? 'warning' : 'neutral' },
+	];
+
+	return {
+		id: `${kind}-${identifierSuffix}`,
+		label: displayLabel,
+		kind,
+		degreeHint: 0,
+		size: kind === 'firm' ? 8.4 : 4.8,
+		isHub: kind === 'firm',
+		title: displayLabel,
+		identifierLine: isStub ? 'Derived from relationship detail' : 'Linked entity',
+		badges,
+		marker: kind === 'firm' ? 'B' : 'I',
+		summary: rawValue ? `${sectionTitle}: ${rawValue}` : `${sectionTitle} relationship derived from ${sourceNode.title}.`,
+		searchText: `${displayLabel} ${rawValue} ${sectionTitle}`.toLowerCase(),
+		externalLinks: [],
+		detailSections: [
+			{
+				title: 'Derived Relationship',
+				items: [
+					{ label: 'Source node', value: sourceNode.title },
+					{ label: 'Section', value: sectionTitle },
+					{ label: 'Role / Context', value: rawValue || 'Not specified' },
+				],
+			},
+		],
+	};
+}
+
+function buildRelationshipLink(sourceNode: GraphNode, relatedNode: GraphNode, relationship: RelationshipKind): GraphLink {
+	if (sourceNode.kind === 'individual') {
+		return {
+			source: sourceNode.id,
+			target: relatedNode.id,
+			weight: relationship === 'control' ? 1.7 : 2,
+			relationship,
+		};
+	}
+
+	if (relationship === 'control') {
+		return {
+			source: relatedNode.id,
+			target: sourceNode.id,
+			weight: 1.7,
+			relationship,
+		};
+	}
+
+	return {
+		source: relatedNode.id,
+		target: sourceNode.id,
+		weight: 2,
+		relationship,
+	};
+}
+
+function hasLinkWithIdentity(links: GraphLink[], candidate: GraphLink): boolean {
+	const candidateIdentity = getLinkIdentityKey(candidate);
+	return links.some((link) => getLinkIdentityKey(link) === candidateIdentity);
+}
+
+function looksLikeFirmEntity(rawLabel: string, rawValue: string): boolean {
+	const combined = `${rawLabel} ${rawValue}`.toLowerCase();
+	return /(llc|llp|ltd|inc\.?|corp\.?|co\.?|company|securities|capital|advisors|advisor|financial|investments|partners|holdings|group|bank)/.test(combined);
+}
+
+function formatDerivedDisplayLabel(rawLabel: string, kind: GraphNodeKind): string {
+	const trimmedLabel = rawLabel.trim();
+	if (kind === 'individual') {
+		const reordered = reorderCommaSeparatedName(trimmedLabel);
+		return titleCasePreservingAcronyms(reordered);
+	}
+
+	return trimmedLabel === trimmedLabel.toUpperCase() ? trimmedLabel : titleCasePreservingAcronyms(trimmedLabel);
+}
+
+function reorderCommaSeparatedName(rawLabel: string): string {
+	if (!rawLabel.includes(',')) {
+		return rawLabel;
+	}
+
+	const [lastName, ...rest] = rawLabel
+		.split(',')
+		.map((part) => part.trim())
+		.filter(Boolean);
+	if (rest.length === 0) {
+		return rawLabel;
+	}
+
+	return `${rest.join(' ')} ${lastName}`.trim();
+}
+
+function normalizeComparableLabel(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+}
+
+function titleCasePreservingAcronyms(value: string): string {
+	return value
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((part) => {
+			if (/^[A-Z0-9&.-]{2,}$/.test(part)) {
+				return part;
+			}
+			return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+		})
+		.join(' ');
+}
+
+function slugify(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+}
+
 function createFirmNode(seed: FirmSeed): GraphNode {
+	const sourceFlag = inferIdSourceFlagFromDetails(seed.details);
+	const badges = sourceFlag ? [...seed.badges, { label: sourceFlag, tone: 'info' as const }] : seed.badges;
+	const detailSections = sourceFlag ? injectIdSourceFlagIntoDetails(seed.details, sourceFlag) : seed.details;
 	return {
 		id: seed.id,
 		label: seed.name,
@@ -369,8 +689,9 @@ function createFirmNode(seed: FirmSeed): GraphNode {
 		size: 10,
 		isHub: true,
 		title: seed.name,
-		identifierLine: `CRD#: ${seed.crd} / SEC#: ${seed.sec}`,
-		badges: seed.badges,
+		identifierLine: sourceFlag ? `CRD#: ${seed.crd} / SEC#: ${seed.sec} · ${sourceFlag}` : `CRD#: ${seed.crd} / SEC#: ${seed.sec}`,
+		sourceFlag,
+		badges,
 		marker: 'B',
 		summary: seed.summary,
 		subtitle: seed.aliases?.join(', '),
@@ -379,11 +700,14 @@ function createFirmNode(seed: FirmSeed): GraphNode {
 			{ label: 'FINRA Summary', href: `https://brokercheck.finra.org/firm/summary/${seed.crd}` },
 			{ label: 'FINRA Detailed Report (PDF)', href: `https://files.brokercheck.finra.org/firm/firm_${seed.crd}.pdf` },
 		],
-		detailSections: seed.details,
+		detailSections,
 	};
 }
 
 function createPersonNode(seed: PersonSeed): GraphNode {
+	const sourceFlag = inferIdSourceFlagFromDetails(seed.details);
+	const badges = sourceFlag ? [...seed.badges, { label: sourceFlag, tone: 'info' as const }] : seed.badges;
+	const detailSections = sourceFlag ? injectIdSourceFlagIntoDetails(seed.details, sourceFlag) : seed.details;
 	return {
 		id: seed.id,
 		label: seed.name,
@@ -392,13 +716,14 @@ function createPersonNode(seed: PersonSeed): GraphNode {
 		size: 5,
 		isHub: false,
 		title: seed.name,
-		identifierLine: `CRD#: ${seed.crd}`,
-		badges: seed.badges,
+		identifierLine: sourceFlag ? `CRD#: ${seed.crd} · ${sourceFlag}` : `CRD#: ${seed.crd}`,
+		sourceFlag,
+		badges,
 		marker: 'I',
 		summary: seed.summary,
 		searchText: `${seed.name} ${seed.crd}`.toLowerCase(),
 		externalLinks: seed.externalLinks ?? [{ label: 'BrokerCheck Profile', href: `https://brokercheck.finra.org/individual/summary/${seed.crd}` }],
-		detailSections: seed.details,
+		detailSections,
 	};
 }
 
@@ -447,6 +772,48 @@ function createGeneratedFirms(count: number): GraphNode[] {
 				},
 			],
 		});
+	});
+}
+
+function inferIdSourceFlagFromDetails(details: EntityDetailSection[]): IdSourceFlag | undefined {
+	for (const section of details) {
+		for (const item of section.items ?? []) {
+			if (item.label !== 'ID source check') {
+				continue;
+			}
+
+			const normalizedValue = item.value.toLowerCase();
+			const hasFinraSource = normalizedValue.includes('finra=true');
+			const hasSecSource = normalizedValue.includes('sec=true');
+			return getIdSourceFlag(hasFinraSource, hasSecSource);
+		}
+	}
+
+	return undefined;
+}
+
+function injectIdSourceFlagIntoDetails(details: EntityDetailSection[], sourceFlag: IdSourceFlag): EntityDetailSection[] {
+	return details.map((section) => {
+		if (!section.items?.some((item) => item.label === 'ID source check')) {
+			return section;
+		}
+
+		if (section.items.some((item) => item.label === 'ID source flag')) {
+			return section;
+		}
+
+		const nextItems: EntityDetailItem[] = [];
+		for (const item of section.items) {
+			nextItems.push(item);
+			if (item.label === 'CRD') {
+				nextItems.push({ label: 'ID source flag', value: sourceFlag });
+			}
+		}
+
+		return {
+			...section,
+			items: nextItems,
+		};
 	});
 }
 
@@ -1070,4 +1437,8 @@ export function getLinkKey(link: GraphLink): string {
 	const source = getEndpointId(link.source);
 	const target = getEndpointId(link.target);
 	return source < target ? `${source}:${target}` : `${target}:${source}`;
+}
+
+export function getLinkIdentityKey(link: GraphLink): string {
+	return `${getLinkKey(link)}:${link.relationship}`;
 }

@@ -9,14 +9,18 @@ import {
 	getDisplayedStats,
 	getEndpointId,
 	getKindLabel,
-	getLinkKey,
+	getLinkIdentityKey,
+	inferRelatedGraphFromDetails,
+	mergeGraphDataset,
 	projectGraphData,
 	revealSearchResults,
 	type BadgeTone,
 	type GraphDataset,
 	type GraphLink,
 	type GraphNode,
+	type RemoteGraphSearchResult,
 } from '@/lib/graph-data';
+import { DEFAULT_REGULATOR_SCHEMA } from '@/lib/regulator-schemas';
 
 type CosmographComponentType = React.ComponentType<
 	CosmographProps & {
@@ -63,14 +67,16 @@ function getPseudoRandomOffset(seedString: string, range: number): number {
 }
 
 export default function GraphView() {
-	const dataset = useMemo<GraphDataset>(() => createGraphDataset(), []);
+	const [dataset, setDataset] = useState<GraphDataset>(() => createGraphDataset());
+	const regulatorSchema = DEFAULT_REGULATOR_SCHEMA;
+	const regulatorLabel = regulatorSchema['search-results']['x-site-source'];
 	const graphRef = useRef<CosmographRef>(undefined);
 
 	const [CosmographCanvas, setCosmographCanvas] = useState<CosmographComponentType | null>(null);
 	const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set(dataset.initialVisibleNodeIds));
 	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 	const [searchQuery, setSearchQuery] = useState('');
-	const [statusMessage, setStatusMessage] = useState('Ready with a seeded FINRA-style graph. Search a name like “thornton”.');
+	const [statusMessage, setStatusMessage] = useState(`Ready with a seeded ${regulatorLabel} graph. Search a name like “thornton”.`);
 	const [selectionLog, setSelectionLog] = useState<string[]>(['Loaded NEXA SECURITIES demo graph.']);
 	const [showInfo, setShowInfo] = useState(true);
 	const [showLog, setShowLog] = useState(false);
@@ -78,6 +84,7 @@ export default function GraphView() {
 	const [showLegend, setShowLegend] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(true);
 	const [panelPinned, setPanelPinned] = useState(true);
+	const [isSearchingUpstream, setIsSearchingUpstream] = useState(false);
 
 	const visibleGraph = useMemo(() => projectGraphData(dataset, visibleNodeIds), [dataset, visibleNodeIds]);
 	const selectedNode = selectedNodeId ? (dataset.nodeById.get(selectedNodeId) ?? null) : null;
@@ -108,7 +115,7 @@ export default function GraphView() {
 					const target = getEndpointId(link.target);
 					return highlightedNodeIds.has(source) && highlightedNodeIds.has(target) && (traceMode || source === activeNodeId || target === activeNodeId);
 				})
-				.map((link) => getLinkKey(link)),
+				.map((link) => getLinkIdentityKey(link)),
 		);
 	}, [activeNodeId, highlightedNodeIds, traceMode, visibleGraph.links]);
 
@@ -128,6 +135,23 @@ export default function GraphView() {
 
 	const appendLog = useCallback((entry: string) => {
 		setSelectionLog((currentEntries) => [entry, ...currentEntries].slice(0, 10));
+	}, []);
+
+	const hydrateNodeRelationships = useCallback((baseDataset: GraphDataset, nodeId: string) => {
+		const inferredPayload = inferRelatedGraphFromDetails(baseDataset, nodeId);
+		if (inferredPayload.nodes.length === 0 && inferredPayload.links.length === 0) {
+			return {
+				dataset: baseDataset,
+				addedNodeCount: 0,
+				addedLinkCount: 0,
+			};
+		}
+
+		return {
+			dataset: mergeGraphDataset(baseDataset, inferredPayload),
+			addedNodeCount: inferredPayload.nodes.length,
+			addedLinkCount: inferredPayload.links.length,
+		};
 	}, []);
 
 	const cosmographGraph = useMemo(() => {
@@ -168,10 +192,11 @@ export default function GraphView() {
 		const pointIndexByNodeId = new Map(points.map((node, index) => [node.id, index]));
 
 		const links: CosmographLink[] = visibleGraph.links.map((link) => {
-			const isHighlighted = highlightedLinkIds.has(getLinkKey(link));
+			const isHighlighted = highlightedLinkIds.has(getLinkIdentityKey(link));
 			const source = getEndpointId(link.source);
 			const target = getEndpointId(link.target);
 			const faded = traceMode && selectedNodeId && !(highlightedNodeIds.has(source) && highlightedNodeIds.has(target));
+			const relationshipVisual = getRelationshipVisual(link.relationship);
 
 			return {
 				source,
@@ -181,11 +206,11 @@ export default function GraphView() {
 				weight: link.weight,
 				relationship: link.relationship,
 				graphColor:
-					isHighlighted ? dataset.visual.activeLinkColor
+					isHighlighted ? relationshipVisual.highlightColor
 					: faded ? 'rgba(71, 85, 105, 0.12)'
-					: dataset.visual.linkColor,
-				graphWidth: isHighlighted ? dataset.visual.activeLinkWidth : dataset.visual.linkWidth + ((link.weight ?? 1) - 1) * 0.25,
-				graphStrength: dataset.force.linkStrength + ((link.weight ?? 1) - 1) * 0.02,
+					: relationshipVisual.color,
+				graphWidth: isHighlighted ? Math.max(dataset.visual.activeLinkWidth, relationshipVisual.width + 0.4) : relationshipVisual.width + ((link.weight ?? 1) - 1) * 0.18,
+				graphStrength: dataset.force.linkStrength + relationshipVisual.strengthDelta + ((link.weight ?? 1) - 1) * 0.02,
 			};
 		});
 
@@ -235,9 +260,15 @@ export default function GraphView() {
 				return;
 			}
 
+			const hydration = hydrateNodeRelationships(dataset, typedNode.id);
+			const nextDataset = hydration.dataset;
+			if (hydration.addedNodeCount > 0 || hydration.addedLinkCount > 0) {
+				setDataset(nextDataset);
+			}
+
 			setVisibleNodeIds((currentVisibleNodeIds) => {
 				const nextVisibleNodeIds = new Set(currentVisibleNodeIds);
-				for (const expandedNodeId of expandSelection(dataset, typedNode.id)) {
+				for (const expandedNodeId of expandSelection(nextDataset, typedNode.id)) {
 					nextVisibleNodeIds.add(expandedNodeId);
 				}
 				return nextVisibleNodeIds;
@@ -245,10 +276,14 @@ export default function GraphView() {
 			setSelectedNodeId(typedNode.id);
 			setMenuOpen(true);
 			setShowInfo(true);
-			setStatusMessage(`Selected ${typedNode.title}.`);
-			appendLog(`Selected ${typedNode.title}`);
+			setStatusMessage(
+				hydration.addedNodeCount > 0 ? `Selected ${typedNode.title}. Added ${hydration.addedNodeCount} related nodes from detail sections.` : `Selected ${typedNode.title}.`,
+			);
+			appendLog(
+				hydration.addedNodeCount > 0 ? `Selected ${typedNode.title} and expanded ${hydration.addedNodeCount} detail-derived relationships.` : `Selected ${typedNode.title}`,
+			);
 		},
-		[appendLog, dataset],
+		[appendLog, dataset, hydrateNodeRelationships],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
@@ -259,22 +294,80 @@ export default function GraphView() {
 	}, [dataset.viewport.fitViewDurationMs]);
 
 	const handleSearchSubmit = useCallback(
-		(event: React.FormEvent<HTMLFormElement>) => {
+		async (event: React.FormEvent<HTMLFormElement>) => {
 			event.preventDefault();
 			const result = revealSearchResults(dataset, visibleNodeIds, searchQuery);
-			setVisibleNodeIds(result.visibleNodeIds);
-			setStatusMessage(result.message);
-
 			if (result.primaryMatchId) {
+				const hydration = hydrateNodeRelationships(dataset, result.primaryMatchId);
+				const nextDataset = hydration.dataset;
+				if (hydration.addedNodeCount > 0 || hydration.addedLinkCount > 0) {
+					setDataset(nextDataset);
+				}
+
+				const nextVisibleNodeIds = new Set(visibleNodeIds);
+				for (const expandedNodeId of expandSelection(nextDataset, result.primaryMatchId)) nextVisibleNodeIds.add(expandedNodeId);
+				setVisibleNodeIds(nextVisibleNodeIds);
+				setStatusMessage(hydration.addedNodeCount > 0 ? `${result.message} Added ${hydration.addedNodeCount} detail-derived nodes.` : result.message);
+
 				setSelectedNodeId(result.primaryMatchId);
 				setMenuOpen(true);
 				setShowInfo(true);
 				appendLog(`Searched “${result.query}” and surfaced ${result.matchedNodeIds.length} matching nodes.`);
-			} else if (result.query) {
-				appendLog(`Searched “${result.query}” with no local matches.`);
+				return;
+			}
+
+			if (!result.query) {
+				setVisibleNodeIds(result.visibleNodeIds);
+				setStatusMessage(result.message);
+				return;
+			}
+
+			setStatusMessage(`No local matches for “${result.query}”. Checking FINRA/SEC APIs…`);
+			appendLog(`Searched “${result.query}” with no local matches. Checking upstream APIs.`);
+			setIsSearchingUpstream(true);
+
+			try {
+				const response = await fetch(`/api/finra/search?query=${encodeURIComponent(result.query)}`);
+				const remoteResult = (await response.json()) as RemoteGraphSearchResult;
+
+				if (!response.ok) {
+					throw new Error(remoteResult.message || `Lookup failed with status ${response.status}.`);
+				}
+
+				if (!remoteResult.primaryMatchId || remoteResult.nodes.length === 0) {
+					setStatusMessage(remoteResult.message);
+					appendLog(`No upstream matches found for “${result.query}”.`);
+					return;
+				}
+
+				const mergedDataset = mergeGraphDataset(dataset, { nodes: remoteResult.nodes, links: remoteResult.links });
+				const hydration = hydrateNodeRelationships(mergedDataset, remoteResult.primaryMatchId);
+				const nextDataset = hydration.dataset;
+				const nextVisibleNodeIds = new Set(visibleNodeIds);
+				for (const matchedNodeId of remoteResult.matchedNodeIds) {
+					for (const expandedNodeId of expandSelection(nextDataset, matchedNodeId)) nextVisibleNodeIds.add(expandedNodeId);
+				}
+
+				setDataset(nextDataset);
+				setVisibleNodeIds(nextVisibleNodeIds);
+				setSelectedNodeId(remoteResult.primaryMatchId);
+				setMenuOpen(true);
+				setShowInfo(true);
+				setStatusMessage(hydration.addedNodeCount > 0 ? `${remoteResult.message} Added ${hydration.addedNodeCount} detail-derived nodes.` : remoteResult.message);
+				appendLog(
+					remoteResult.source === 'local' ?
+						`Loaded ${remoteResult.matchedNodeIds.length} cached node(s) for “${result.query}”.`
+					:	`Fetched ${remoteResult.matchedNodeIds.length} upstream node(s) for “${result.query}” and saved them locally.`,
+				);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : 'Unknown search failure.';
+				setStatusMessage(`Unable to fetch upstream data for “${result.query}”.`);
+				appendLog(`Upstream lookup failed for “${result.query}”: ${message}`);
+			} finally {
+				setIsSearchingUpstream(false);
 			}
 		},
-		[appendLog, dataset, searchQuery, visibleNodeIds],
+		[appendLog, dataset, hydrateNodeRelationships, searchQuery, visibleNodeIds],
 	);
 
 	const handleResetSession = useCallback(() => {
@@ -283,6 +376,7 @@ export default function GraphView() {
 		setTraceMode(false);
 		setShowInfo(true);
 		setShowLog(false);
+		setIsSearchingUpstream(false);
 		setSearchQuery('');
 		setStatusMessage('Session reset. Select a node to explore the graph.');
 		appendLog('Reset the local graph session.');
@@ -305,22 +399,27 @@ export default function GraphView() {
 			<header className='absolute inset-x-0 top-0 z-30 border-b border-white/10 bg-slate-950/85 backdrop-blur-xl'>
 				<div className='flex flex-wrap items-center justify-between gap-4 px-4 py-4 lg:px-6'>
 					<div className='flex flex-1 flex-wrap items-center gap-4'>
-						<h1 className='text-2xl font-semibold tracking-[0.24em] text-white'>FINRA</h1>
+						<div>
+							<h1 className='text-2xl font-semibold tracking-[0.24em] text-white'>{regulatorLabel}</h1>
+							<p className='mt-1 text-xs text-slate-400'>{regulatorSchema.home.title}</p>
+						</div>
 						<form
 							className='flex min-w-70 flex-1 flex-wrap items-center gap-2'
 							onSubmit={handleSearchSubmit}>
 							<div className='min-w-55 flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 shadow-inner shadow-slate-950/40'>
 								<input
 									className='w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400'
+									disabled={isSearchingUpstream}
 									placeholder='firm, person, CRD/SEC#'
 									value={searchQuery}
 									onChange={(event) => setSearchQuery(event.target.value)}
 								/>
 							</div>
 							<button
-								className='rounded-xl bg-sky-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-300'
+								className='rounded-xl bg-sky-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-slate-500'
+								disabled={isSearchingUpstream}
 								type='submit'>
-								Fetch Nodes
+								{isSearchingUpstream ? 'Checking APIs…' : 'Fetch Nodes'}
 							</button>
 							{statusMessage ?
 								<span className='text-sm text-slate-300'>{statusMessage}</span>
@@ -614,5 +713,46 @@ function getBadgeClassName(tone: BadgeTone): string {
 		case 'neutral':
 		default:
 			return 'rounded-full bg-slate-400/10 px-3 py-1 text-xs font-medium text-slate-200';
+	}
+}
+
+function getRelationshipVisual(relationship: GraphLink['relationship']): { color: string; highlightColor: string; width: number; strengthDelta: number } {
+	switch (relationship) {
+		case 'control':
+			return {
+				color: 'rgba(248, 113, 113, 0.92)',
+				highlightColor: 'rgba(252, 165, 165, 0.98)',
+				width: 1.7,
+				strengthDelta: 0.08,
+			};
+		case 'previous-employment':
+			return {
+				color: 'rgba(203, 213, 225, 0.42)',
+				highlightColor: 'rgba(226, 232, 240, 0.84)',
+				width: 1.05,
+				strengthDelta: -0.02,
+			};
+		case 'disclosure':
+			return {
+				color: 'rgba(251, 191, 36, 0.72)',
+				highlightColor: 'rgba(253, 224, 71, 0.92)',
+				width: 1.4,
+				strengthDelta: 0.04,
+			};
+		case 'peer':
+			return {
+				color: 'rgba(148, 163, 184, 0.34)',
+				highlightColor: 'rgba(186, 230, 253, 0.88)',
+				width: 1.05,
+				strengthDelta: 0,
+			};
+		case 'employment':
+		default:
+			return {
+				color: 'rgba(96, 165, 250, 0.82)',
+				highlightColor: 'rgba(125, 211, 252, 0.96)',
+				width: 1.35,
+				strengthDelta: 0.02,
+			};
 	}
 }
