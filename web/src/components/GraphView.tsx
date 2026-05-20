@@ -53,6 +53,11 @@ type CosmographLink = Record<string, unknown> & {
 	graphStrength: number;
 };
 
+type PointPosition = {
+	x: number;
+	y: number;
+};
+
 const COSMOGRAPH_FIT_VIEW_PADDING = 0.14;
 
 function getOrganicShellPosition(node: GraphNode, nodeIndex: number, totalNodes: number, maxDegreeHint: number): { x: number; y: number } {
@@ -82,11 +87,44 @@ function getConnectionGravityBias(sourceDegree: number, targetDegree: number): n
 	return Math.log2(sourceDegree + targetDegree + 2);
 }
 
+function getClusterAngleSeed(nodeId: string): number {
+	let hash = 0;
+	for (let index = 0; index < nodeId.length; index += 1) {
+		hash = (hash * 31 + nodeId.charCodeAt(index)) >>> 0;
+	}
+	return (hash % 360) * (Math.PI / 180);
+}
+
+function getClusteredExpansionPosition(
+	anchorPosition: PointPosition,
+	anchorNode: GraphNode,
+	node: GraphNode,
+	nodeIndex: number,
+	nodeCount: number,
+	ringDepth: number,
+): PointPosition {
+	const baseAngle = getClusterAngleSeed(anchorNode.id) + ringDepth * 0.42;
+	const slice = (Math.PI * 2) / Math.max(1, nodeCount);
+	const angle = baseAngle + nodeIndex * slice;
+	const anchorMass = Math.log2(Math.max(1, anchorNode.degreeHint) + 1);
+	const nodeMass = Math.log2(Math.max(1, node.degreeHint) + 1);
+	const ringRadius = Math.max(12, anchorNode.size * 0.95 + 10 + ringDepth * 12 + Math.max(0, nodeCount - 1) * 1.45 + anchorMass * 2.2 + nodeMass);
+	const ellipseX = node.kind === 'firm' ? 1.02 : 1.14;
+	const ellipseY = node.kind === 'firm' ? 0.94 : 1.04;
+	const jitter = ((nodeIndex % 3) - 1) * 0.75;
+
+	return {
+		x: anchorPosition.x + Math.cos(angle) * (ringRadius + jitter) * ellipseX,
+		y: anchorPosition.y + Math.sin(angle) * (ringRadius - jitter * 0.5) * ellipseY,
+	};
+}
+
 export default function GraphView() {
 	const [dataset, setDataset] = useState<GraphDataset>(() => createGraphDataset());
 	const regulatorSchema = DEFAULT_REGULATOR_SCHEMA;
 	const regulatorLabel = regulatorSchema['search-results']['x-site-source'];
 	const graphRef = useRef<CosmographRef>(undefined);
+	const searchInputRef = useRef<HTMLInputElement>(null);
 
 	const [CosmographCanvas, setCosmographCanvas] = useState<CosmographComponentType | null>(null);
 	const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set(dataset.initialVisibleNodeIds));
@@ -148,6 +186,10 @@ export default function GraphView() {
 		return () => {
 			isMounted = false;
 		};
+	}, []);
+
+	useEffect(() => {
+		searchInputRef.current?.focus();
 	}, []);
 
 	const appendLog = useCallback((entry: string) => {
@@ -236,6 +278,19 @@ export default function GraphView() {
 	}, [dataset.force.linkStrength, dataset.nodeById, dataset.visual, highlightedLinkIds, highlightedNodeIds, selectedNodeId, visibleGraph.links, visibleGraph.nodes]);
 
 	const nodeIndexById = useMemo(() => new Map(cosmographGraph.points.map((node, index) => [node.id, index])), [cosmographGraph.points]);
+	const renderedNodePositionById = useMemo(
+		() =>
+			new Map(
+				cosmographGraph.points.map((node) => [
+					node.id,
+					{
+						x: Number(node.x ?? 0),
+						y: Number(node.y ?? 0),
+					},
+				]),
+			),
+		[cosmographGraph.points],
+	);
 
 	const centerOnNode = useCallback(
 		(nodeId: string | null) => {
@@ -254,6 +309,100 @@ export default function GraphView() {
 			graph.zoomToPoint(nodeIndex, dataset.viewport.focusDurationMs, dataset.force.focusZoom, true);
 		},
 		[dataset.force.focusZoom, dataset.viewport.focusDurationMs, nodeIndexById],
+	);
+
+	const applyExpansionLayout = useCallback(
+		(baseVisibleNodeIds: Set<string>, nextVisibleNodeIds: Set<string>, nextDataset: GraphDataset, anchorNodeId: string): GraphDataset => {
+			const addedNodeIds = Array.from(nextVisibleNodeIds).filter((nodeId) => !baseVisibleNodeIds.has(nodeId) && nodeId !== anchorNodeId);
+			if (addedNodeIds.length === 0) {
+				return nextDataset;
+			}
+
+			const anchorNode = nextDataset.nodeById.get(anchorNodeId);
+			if (!anchorNode) {
+				return nextDataset;
+			}
+
+			const fallbackAnchorPosition = renderedNodePositionById.get(anchorNodeId) ?? {
+				x: anchorNode.x ?? 0,
+				y: anchorNode.y ?? 0,
+			};
+			const positionedNodes = new Map(nextDataset.graphData.nodes.map((node) => [node.id, node]));
+			const placedPositions = new Map<string, PointPosition>([[anchorNodeId, fallbackAnchorPosition]]);
+
+			const directNodeIds = addedNodeIds.filter((nodeId) =>
+				(nextDataset.linksByNodeId.get(nodeId) ?? []).some((link) => getEndpointId(link.source) === anchorNodeId || getEndpointId(link.target) === anchorNodeId),
+			);
+			const directGroups = [
+				...directNodeIds
+					.map((nodeId) => nextDataset.nodeById.get(nodeId))
+					.filter((node): node is GraphNode => Boolean(node))
+					.sort((left, right) => right.degreeHint - left.degreeHint),
+			];
+
+			directGroups.forEach((node, index) => {
+				const nextPosition = getClusteredExpansionPosition(fallbackAnchorPosition, anchorNode, node, index, directGroups.length, 0);
+				positionedNodes.set(node.id, {
+					...node,
+					x: nextPosition.x,
+					y: nextPosition.y,
+				});
+				placedPositions.set(node.id, nextPosition);
+			});
+
+			const secondaryGroups = new Map<string, GraphNode[]>();
+			for (const nodeId of addedNodeIds) {
+				if (directNodeIds.includes(nodeId)) {
+					continue;
+				}
+
+				const node = nextDataset.nodeById.get(nodeId);
+				if (!node) {
+					continue;
+				}
+
+				const neighborIds = (nextDataset.linksByNodeId.get(nodeId) ?? [])
+					.map((link) => {
+						const sourceId = getEndpointId(link.source);
+						const targetId = getEndpointId(link.target);
+						return sourceId === nodeId ? targetId : sourceId;
+					})
+					.filter((neighborId) => placedPositions.has(neighborId) || baseVisibleNodeIds.has(neighborId));
+
+				const preferredAnchorId = neighborIds.find((neighborId) => directNodeIds.includes(neighborId)) ?? neighborIds[0] ?? anchorNodeId;
+				const anchorGroup = secondaryGroups.get(preferredAnchorId) ?? [];
+				anchorGroup.push(node);
+				secondaryGroups.set(preferredAnchorId, anchorGroup);
+			}
+
+			for (const [groupAnchorId, groupNodes] of secondaryGroups.entries()) {
+				const groupAnchorNode = nextDataset.nodeById.get(groupAnchorId) ?? anchorNode;
+				const groupAnchorPosition = placedPositions.get(groupAnchorId) ?? renderedNodePositionById.get(groupAnchorId) ?? fallbackAnchorPosition;
+				const sortedGroupNodes = [...groupNodes].sort((left, right) => right.degreeHint - left.degreeHint);
+
+				sortedGroupNodes.forEach((node, index) => {
+					const nextPosition = getClusteredExpansionPosition(groupAnchorPosition, groupAnchorNode, node, index, sortedGroupNodes.length, groupAnchorId === anchorNodeId ? 1 : 2);
+					positionedNodes.set(node.id, {
+						...node,
+						x: nextPosition.x,
+						y: nextPosition.y,
+					});
+					placedPositions.set(node.id, nextPosition);
+				});
+			}
+
+			const nextNodes = nextDataset.graphData.nodes.map((node) => positionedNodes.get(node.id) ?? node);
+
+			return {
+				...nextDataset,
+				graphData: {
+					...nextDataset.graphData,
+					nodes: nextNodes,
+				},
+				nodeById: new Map(nextNodes.map((node) => [node.id, node])),
+			};
+		},
+		[renderedNodePositionById],
 	);
 
 	useEffect(() => {
@@ -305,17 +454,18 @@ export default function GraphView() {
 
 			const hydration = hydrateNodeRelationships(dataset, typedNode.id);
 			const nextDataset = hydration.dataset;
-			if (hydration.addedNodeCount > 0 || hydration.addedLinkCount > 0) {
-				setDataset(nextDataset);
+
+			const nextVisibleNodeIds = new Set(visibleNodeIds);
+			for (const expandedNodeId of expandSelection(nextDataset, typedNode.id)) {
+				nextVisibleNodeIds.add(expandedNodeId);
 			}
 
-			setVisibleNodeIds((currentVisibleNodeIds) => {
-				const nextVisibleNodeIds = new Set(currentVisibleNodeIds);
-				for (const expandedNodeId of expandSelection(nextDataset, typedNode.id)) {
-					nextVisibleNodeIds.add(expandedNodeId);
-				}
-				return nextVisibleNodeIds;
-			});
+			const positionedDataset = applyExpansionLayout(visibleNodeIds, nextVisibleNodeIds, nextDataset, typedNode.id);
+			if (positionedDataset !== dataset) {
+				setDataset(positionedDataset);
+			}
+
+			setVisibleNodeIds(nextVisibleNodeIds);
 			setSelectedNodeId(typedNode.id);
 			setMenuOpen(true);
 			setShowInfo(true);
@@ -326,7 +476,7 @@ export default function GraphView() {
 				hydration.addedNodeCount > 0 ? `Selected ${typedNode.title} and expanded ${hydration.addedNodeCount} detail-derived relationships.` : `Selected ${typedNode.title}`,
 			);
 		},
-		[appendLog, dataset, hydrateNodeRelationships],
+		[appendLog, applyExpansionLayout, dataset, hydrateNodeRelationships, visibleNodeIds],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
@@ -339,16 +489,24 @@ export default function GraphView() {
 	const handleSearchSubmit = useCallback(
 		async (event: React.FormEvent<HTMLFormElement>) => {
 			event.preventDefault();
+			if (isSearchingUpstream) {
+				searchInputRef.current?.focus();
+				return;
+			}
+
 			const normalizedQuery = searchQuery.trim().toLowerCase();
 
 			if (!normalizedQuery) {
 				setStatusMessage('Enter a name, firm, or CRD/SEC# to expand the graph.');
+				searchInputRef.current?.focus();
 				return;
 			}
 
+			setSearchQuery('');
 			setStatusMessage(`Checking local cache for “${normalizedQuery}”, then FINRA/SEC APIs if needed…`);
 			appendLog(`Searched “${normalizedQuery}” via cache-first lookup.`);
 			setIsSearchingUpstream(true);
+			searchInputRef.current?.focus();
 
 			try {
 				const response = await fetch(`/api/finra/search?query=${encodeURIComponent(normalizedQuery)}`);
@@ -371,8 +529,9 @@ export default function GraphView() {
 				for (const matchedNodeId of remoteResult.matchedNodeIds) {
 					for (const expandedNodeId of expandSelection(nextDataset, matchedNodeId)) nextVisibleNodeIds.add(expandedNodeId);
 				}
+				const positionedDataset = applyExpansionLayout(visibleNodeIds, nextVisibleNodeIds, nextDataset, remoteResult.primaryMatchId);
 
-				setDataset(nextDataset);
+				setDataset(positionedDataset);
 				setVisibleNodeIds(nextVisibleNodeIds);
 				setSelectedNodeId(remoteResult.primaryMatchId);
 				setMenuOpen(true);
@@ -389,9 +548,10 @@ export default function GraphView() {
 				appendLog(`Cache/upstream lookup failed for “${normalizedQuery}”: ${message}`);
 			} finally {
 				setIsSearchingUpstream(false);
+				searchInputRef.current?.focus();
 			}
 		},
-		[appendLog, dataset, hydrateNodeRelationships, searchQuery, visibleNodeIds],
+		[appendLog, applyExpansionLayout, dataset, hydrateNodeRelationships, isSearchingUpstream, searchQuery, visibleNodeIds],
 	);
 
 	const handleResetSession = useCallback(() => {
@@ -433,7 +593,7 @@ export default function GraphView() {
 							<div className='min-w-55 flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 shadow-inner shadow-slate-950/40'>
 								<input
 									className='w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400'
-									disabled={isSearchingUpstream}
+									ref={searchInputRef}
 									placeholder='firm, person, CRD/SEC#'
 									value={searchQuery}
 									onChange={(event) => setSearchQuery(event.target.value)}
