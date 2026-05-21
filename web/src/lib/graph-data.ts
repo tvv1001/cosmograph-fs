@@ -150,24 +150,24 @@ export interface DetailInferenceOptions {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	chargeStrength: -180,
-	linkDistance: 176,
-	linkStrength: 0.18,
-	simulationDecay: 2550,
-	simulationGravity: 0.06,
-	simulationCenter: 0.1,
-	simulationRepulsion: 0.64,
+	chargeStrength: -220,
+	linkDistance: 228,
+	linkStrength: 0.14,
+	simulationDecay: 2700,
+	simulationGravity: 0.045,
+	simulationCenter: 0.07,
+	simulationRepulsion: 0.92,
 	simulationRepulsionFromMouse: 0,
-	simulationLinkDistanceVariation: [0.8, 1.34],
-	simulationFriction: 0.9,
-	simulationImpulse: 0.18,
-	manualReheatImpulse: 0.22,
+	simulationLinkDistanceVariation: [0.88, 1.48],
+	simulationFriction: 0.92,
+	simulationImpulse: 0.16,
+	manualReheatImpulse: 0.2,
 	velocityDecay: 0.32,
 	alphaDecay: 0.042,
 	alphaMin: 0.004,
 	warmupTicks: 82,
 	cooldownTicks: 360,
-	collisionPadding: 24,
+	collisionPadding: 42,
 	neighborhoodSpread: 72,
 	focusZoom: 1.6,
 	reheatOnSelect: true,
@@ -291,6 +291,8 @@ export function createGraphDataset(): GraphDataset {
 		node.degreeHint = degreeCounts.get(node.id) ?? 0;
 		node.size = getNodeSize(node.degreeHint, node.isHub, node.kind);
 	}
+
+	assignInitialNodePositions(nodes, links);
 
 	const graphData = { nodes, links };
 	const adjacency = createAdjacencyMap(links);
@@ -1447,6 +1449,102 @@ function createLinksByNodeId(links: GraphLink[]): Map<string, GraphLink[]> {
 	return linksByNodeId;
 }
 
+function assignInitialNodePositions(nodes: GraphNode[], links: GraphLink[]): void {
+	const linksByNodeId = createLinksByNodeId(links);
+	const nodeById = new Map(nodes.map((node) => [node.id, node]));
+	const firms = nodes.filter((node) => node.kind === 'firm').sort((left, right) => right.degreeHint - left.degreeHint);
+	const individuals = nodes.filter((node) => node.kind === 'individual').sort((left, right) => right.degreeHint - left.degreeHint);
+	const firmPositions = new Map<string, { x: number; y: number }>();
+	const firmAssignments = new Map<string, GraphNode[]>();
+	const unassignedIndividuals: GraphNode[] = [];
+
+	const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+	const totalFirms = Math.max(1, firms.length);
+
+	for (let index = 0; index < firms.length; index += 1) {
+		const firm = firms[index];
+		const normalized = (index + 1) / totalFirms;
+		const angle = index * goldenAngle + getStableAngularOffset(firm.id);
+		const radius = 140 + Math.sqrt(index + 1) * 154 + normalized * 180;
+		const ellipseX = 1.34;
+		const ellipseY = 0.9;
+		const position = {
+			x: Math.cos(angle) * radius * ellipseX,
+			y: Math.sin(angle) * radius * ellipseY,
+		};
+
+		firm.x = position.x;
+		firm.y = position.y;
+		firmPositions.set(firm.id, position);
+	}
+
+	for (const person of individuals) {
+		const relatedLinks = linksByNodeId.get(person.id) ?? [];
+		const relatedFirms = relatedLinks
+			.filter((link) => link.relationship === 'employment' || link.relationship === 'control' || link.relationship === 'disclosure')
+			.map((link) => {
+				const sourceId = getEndpointId(link.source);
+				const targetId = getEndpointId(link.target);
+				const relatedFirmId = sourceId === person.id ? targetId : sourceId;
+				return nodeById.get(relatedFirmId);
+			})
+			.filter((node): node is GraphNode => node?.kind === 'firm')
+			.sort((left, right) => right.degreeHint - left.degreeHint);
+
+		const primaryFirm = relatedFirms[0];
+		if (!primaryFirm) {
+			unassignedIndividuals.push(person);
+			continue;
+		}
+
+		const group = firmAssignments.get(primaryFirm.id) ?? [];
+		group.push(person);
+		firmAssignments.set(primaryFirm.id, group);
+	}
+
+	for (const [firmId, assignedIndividuals] of firmAssignments.entries()) {
+		const firmPosition = firmPositions.get(firmId);
+		const firmNode = nodeById.get(firmId);
+		if (!firmPosition || !firmNode) {
+			continue;
+		}
+
+		const sortedIndividuals = [...assignedIndividuals].sort((left, right) => right.degreeHint - left.degreeHint);
+		const ringCapacity = 7;
+
+		for (let index = 0; index < sortedIndividuals.length; index += 1) {
+			const person = sortedIndividuals[index];
+			const ringIndex = Math.floor(index / ringCapacity);
+			const indexInRing = index % ringCapacity;
+			const itemsInRing = Math.min(ringCapacity, sortedIndividuals.length - ringIndex * ringCapacity);
+			const angle = getStableAngularOffset(firmId) + (Math.PI * 2 * indexInRing) / Math.max(1, itemsInRing) + ringIndex * 0.32;
+			const radialDistance = firmNode.size * 2.45 + 126 + ringIndex * 78 + Math.max(0, itemsInRing - 1) * 5.2;
+			const jitter = ((index % 5) - 2) * 9.5;
+			const tangential = (((index * 7) % 6) - 3) * 8.5;
+
+			person.x = firmPosition.x + Math.cos(angle) * (radialDistance + jitter) * 1.14 - Math.sin(angle) * tangential;
+			person.y = firmPosition.y + Math.sin(angle) * (radialDistance - jitter * 0.35) * 0.92 + Math.cos(angle) * tangential * 0.72;
+		}
+	}
+
+	for (let index = 0; index < unassignedIndividuals.length; index += 1) {
+		const person = unassignedIndividuals[index];
+		const angle = index * goldenAngle + getStableAngularOffset(person.id);
+		const radius = 620 + Math.sqrt(index + 1) * 52;
+		person.x = Math.cos(angle) * radius * 1.08;
+		person.y = Math.sin(angle) * radius * 0.92;
+	}
+}
+
+function getStableAngularOffset(value: string): number {
+	let hash = 0;
+	for (let index = 0; index < value.length; index += 1) {
+		hash = (hash * 33 + value.charCodeAt(index)) >>> 0;
+	}
+
+	return ((hash % 360) * Math.PI) / 180;
+}
+
 function addLink(
 	links: GraphLink[],
 	degreeCounts: Map<string, number>,
@@ -1474,15 +1572,15 @@ function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): n
 	const hasMultipleConnections = normalizedDegree > 1;
 
 	if (isHub) {
-		const baseSize = 42;
-		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 8 + (hasMultipleConnections ? 4 : 0);
-		return Math.min(72, connectedSize);
+		const baseSize = 34;
+		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 6.2 + (hasMultipleConnections ? 3 : 0);
+		return Math.min(56, connectedSize);
 	}
 
 	if (kind === 'individual') {
-		const baseSize = 28;
-		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 5.2 + (hasMultipleConnections ? 3 : 0);
-		return Math.min(54, connectedSize);
+		const baseSize = 18;
+		const connectedSize = baseSize + Math.log2(normalizedDegree + 1) * 3.8 + (hasMultipleConnections ? 2 : 0);
+		return Math.min(30, connectedSize);
 	}
 
 	return 32;

@@ -117,22 +117,65 @@ function getClusteredExpansionPosition(
 	nodeIndex: number,
 	nodeCount: number,
 	ringDepth: number,
+	collisionPadding: number,
 ): PointPosition {
 	const baseAngle = getClusterAngleSeed(anchorNode.id) + ringDepth * 0.42;
 	const slice = (Math.PI * 2) / Math.max(1, nodeCount);
 	const angle = baseAngle + nodeIndex * slice;
 	const anchorMass = Math.log2(Math.max(1, anchorNode.degreeHint) + 1);
 	const nodeMass = Math.log2(Math.max(1, node.degreeHint) + 1);
-	const ringRadius = Math.max(34, anchorNode.size * 1.22 + 26 + ringDepth * 22 + Math.max(0, nodeCount - 1) * 2.4 + anchorMass * 4.8 + nodeMass * 2.6);
+	const ringRadius = Math.max(52, anchorNode.size * 1.72 + collisionPadding * 1.35 + 34 + ringDepth * 34 + Math.max(0, nodeCount - 1) * 4.2 + anchorMass * 6.8 + nodeMass * 3.4);
 	const ellipseX = node.kind === 'firm' ? 1.1 : 1.22;
-	const ellipseY = node.kind === 'firm' ? 0.92 : 1.06;
-	const jitter = ((nodeIndex % 5) - 2) * 1.25;
-	const tangentialOffset = (nodeIndex % 2 === 0 ? 1 : -1) * (ringDepth + 1) * 6.5;
+	const ellipseY = node.kind === 'firm' ? 0.9 : 1.04;
+	const jitter = ((nodeIndex % 5) - 2) * 1.8;
+	const tangentialOffset = (nodeIndex % 2 === 0 ? 1 : -1) * (ringDepth + 1) * (collisionPadding * 0.28 + 7.5);
 
 	return {
 		x: anchorPosition.x + Math.cos(angle) * (ringRadius + jitter) * ellipseX - Math.sin(angle) * tangentialOffset,
 		y: anchorPosition.y + Math.sin(angle) * (ringRadius - jitter * 0.4) * ellipseY + Math.cos(angle) * tangentialOffset * 0.65,
 	};
+}
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
+
+function parseColorToRgb(color: string): { r: number; g: number; b: number } | null {
+	const hexMatch = color.trim().match(/^#([0-9a-f]{6})$/i);
+	if (hexMatch) {
+		const numeric = Number.parseInt(hexMatch[1], 16);
+		return {
+			r: (numeric >> 16) & 255,
+			g: (numeric >> 8) & 255,
+			b: numeric & 255,
+		};
+	}
+
+	const rgbaMatch = color.trim().match(/^rgba?\((\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?)(?:,\s*([\d.]+))?\)$/i);
+	if (rgbaMatch) {
+		return {
+			r: Number(rgbaMatch[1]),
+			g: Number(rgbaMatch[2]),
+			b: Number(rgbaMatch[3]),
+		};
+	}
+
+	return null;
+}
+
+function mixColors(baseColor: string, targetColor: string, ratio: number): string {
+	const base = parseColorToRgb(baseColor);
+	const target = parseColorToRgb(targetColor);
+	if (!base || !target) {
+		return baseColor;
+	}
+
+	const amount = clamp(ratio, 0, 1);
+	const r = Math.round(base.r + (target.r - base.r) * amount);
+	const g = Math.round(base.g + (target.g - base.g) * amount);
+	const b = Math.round(base.b + (target.b - base.b) * amount);
+
+	return `rgb(${r}, ${g}, ${b})`;
 }
 
 function areNodeIdSetsEqual(left: Set<string>, right: Set<string>): boolean {
@@ -258,14 +301,35 @@ export default function GraphView() {
 	const cosmographGraph = useMemo(() => {
 		const totalVisibleNodes = Math.max(1, visibleGraph.nodes.length);
 		const maxDegreeHint = visibleGraph.nodes.reduce((maxDegree, node) => Math.max(maxDegree, node.degreeHint), 0);
-		const points: CosmographNode[] = visibleGraph.nodes.map((node, index) => {
+		const positionedNodes = visibleGraph.nodes.map((node, index) => {
+			const fallbackPosition = getOrganicShellPosition(node, index, totalVisibleNodes, maxDegreeHint);
+			return {
+				node,
+				index,
+				position: {
+					x: node.x ?? fallbackPosition.x,
+					y: node.y ?? fallbackPosition.y,
+				},
+			};
+		});
+
+		const yValues = positionedNodes.map(({ position }) => position.y);
+		const minY = yValues.length > 0 ? Math.min(...yValues) : 0;
+		const maxY = yValues.length > 0 ? Math.max(...yValues) : 1;
+		const yRange = Math.max(1, maxY - minY);
+
+		const points: CosmographNode[] = positionedNodes.map(({ node, index, position }) => {
 			const isHighlighted = highlightedNodeIds.has(node.id);
 			const baseColor =
 				graphHighlightNodeId === node.id ? dataset.visual.activeNodeColor
 				: traceMode && isHighlighted ? dataset.visual.neighborNodeColor
 				: dataset.visual.nodeColors[node.kind];
-
-			const fallbackPosition = getOrganicShellPosition(node, index, totalVisibleNodes, maxDegreeHint);
+			const depth = clamp((position.y - minY) / yRange, 0, 1);
+			const depthColor =
+				graphHighlightNodeId === node.id ? baseColor
+				: depth >= 0.55 ? mixColors(baseColor, '#f8fafc', (depth - 0.55) * 0.32)
+				: mixColors(baseColor, '#020617', (0.55 - depth) * 0.28);
+			const renderedSize = Math.max(node.kind === 'firm' ? 24 : 14, node.size * 0.72 * (0.9 + depth * 0.16));
 
 			return {
 				id: node.id,
@@ -274,17 +338,18 @@ export default function GraphView() {
 				title: node.title,
 				kind: node.kind,
 				degreeHint: node.degreeHint,
-				graphColor: baseColor,
-				graphSize: node.size,
+				graphColor: depthColor,
+				graphSize: renderedSize,
 				graphLabelWeight: Math.max(
 					1,
 					node.degreeHint +
+						Math.round(depth * 4) +
 						(graphHighlightNodeId === node.id ? 24
 						: traceMode && isHighlighted ? 10
 						: 0),
 				),
-				x: node.x ?? fallbackPosition.x,
-				y: node.y ?? fallbackPosition.y,
+				x: position.x,
+				y: position.y,
 			};
 		});
 
@@ -566,7 +631,7 @@ export default function GraphView() {
 			];
 
 			directGroups.forEach((node, index) => {
-				const nextPosition = getClusteredExpansionPosition(fallbackAnchorPosition, anchorNode, node, index, directGroups.length, 0);
+				const nextPosition = getClusteredExpansionPosition(fallbackAnchorPosition, anchorNode, node, index, directGroups.length, 0, nextDataset.force.collisionPadding);
 				positionedNodes.set(node.id, {
 					...node,
 					x: nextPosition.x,
@@ -606,7 +671,15 @@ export default function GraphView() {
 				const sortedGroupNodes = [...groupNodes].sort((left, right) => right.degreeHint - left.degreeHint);
 
 				sortedGroupNodes.forEach((node, index) => {
-					const nextPosition = getClusteredExpansionPosition(groupAnchorPosition, groupAnchorNode, node, index, sortedGroupNodes.length, groupAnchorId === anchorNodeId ? 1 : 2);
+					const nextPosition = getClusteredExpansionPosition(
+						groupAnchorPosition,
+						groupAnchorNode,
+						node,
+						index,
+						sortedGroupNodes.length,
+						groupAnchorId === anchorNodeId ? 1 : 2,
+						nextDataset.force.collisionPadding,
+					);
 					positionedNodes.set(node.id, {
 						...node,
 						x: nextPosition.x,

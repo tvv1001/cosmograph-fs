@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1" />
+		<title>wasm-sim canvas demo</title>
+		<style>
+			:root {
+				color-scheme: dark;
+			}
+
+			body {
+				margin: 0;
+				font-family: Inter, system-ui, sans-serif;
+				background: #020617;
+				color: #e2e8f0;
+				display: grid;
+				place-items: center;
+				min-height: 100vh;
+			}
+
+			main {
+				width: min(960px, calc(100vw - 32px));
+			}
+
+			h1 {
+				margin: 0 0 8px;
+				font-size: 1.25rem;
+			}
+
+			p {
+				margin: 0 0 16px;
+				color: #94a3b8;
+			}
+
+			canvas {
+				width: 100%;
+				height: auto;
+				background: radial-gradient(circle at center, #0f172a 0%, #020617 70%);
+				border: 1px solid rgba(148, 163, 184, 0.18);
+				border-radius: 16px;
+				box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<h1>WASM simulation canvas demo</h1>
+			<p> Build the crate with <code>wasm-pack build --target web --out-dir pkg</code>, then serve this folder and open it in a browser. </p>
+			<canvas
+				id="graph-canvas"
+				width="960"
+				height="640"></canvas>
+		</main>
+		<script
+			type="module"
+			src="./main.js"></script>
+	</body>
+</html>
