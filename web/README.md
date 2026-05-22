@@ -1,10 +1,10 @@
 # Cosmograph-fs Web Application
 
-An interactive network graph visualization application built with Next.js and Cosmograph, designed to display relationship networks between firms and individuals in a FINRA/SEC-style data model.
+An interactive network graph visualization application built with Next.js and Sigma.js/graphology, designed to display relationship networks between firms and individuals in a FINRA/SEC-style data model.
 
 ## Overview
 
-This application provides a high-performance, WebGL-accelerated force-directed graph visualization using [@cosmograph/react](https://cosmograph.app/). It features interactive node selection, dynamic graph expansion, search functionality, and detailed entity views with a focus on minimal movement and user-controlled interactions.
+This application provides a high-performance, WebGL-accelerated force-directed graph visualization using [sigma.js](https://www.sigmajs.org) and [graphology](https://graphology.github.io/). It features interactive node selection, dynamic graph expansion, search functionality, and detailed entity views with a focus on minimal movement and user-controlled interactions.
 
 ## Key Features
 
@@ -21,7 +21,7 @@ This application provides a high-performance, WebGL-accelerated force-directed g
 
 - **Framework**: Next.js 16.2.6 (App Router)
 - **Runtime**: React 19.2.4
-- **Visualization**: @cosmograph/react 2.3.2
+- **Visualization**: sigma.js + graphology
 - **Styling**: Tailwind CSS 4
 - **Language**: TypeScript 5
 - **Package Manager**: pnpm 10.22.0

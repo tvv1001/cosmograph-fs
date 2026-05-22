@@ -11,8 +11,8 @@
 		"lint": "eslint"
 	},
 	"dependencies": {
-		"@cosmograph/react": "^2.3.2",
 		"graphology": "^0.26.0",
+		"graphology-layout-force": "^0.2.4",
 		"graphology-layout-forceatlas2": "^0.10.1",
 		"next": "16.2.6",
 		"react": "19.2.4",

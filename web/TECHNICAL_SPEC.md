@@ -21,7 +21,7 @@
 
 ## Executive Summary
 
-Cosmograph-fs is a high-performance network graph visualization application designed to display and explore relationship networks between financial entities (firms and individuals). The application uses WebGL-accelerated rendering via Cosmograph to handle large graphs with minimal latency, optimized for user-controlled exploration with stable, minimal-movement physics.
+Cosmograph-fs is a high-performance network graph visualization application designed to display and explore relationship networks between financial entities (firms and individuals). The application uses WebGL-accelerated rendering via Sigma.js and Graphology to handle large graphs with minimal latency, optimized for user-controlled exploration with stable, minimal-movement physics.
 
 **Key Design Principles**:
 
@@ -53,7 +53,7 @@ Cosmograph-fs/
 ### Application Flow
 
 ```
-User Interaction → React State → Graph Data Layer → Cosmograph Renderer → WebGL Canvas
+User Interaction → React State → Graph Data Layer → Sigma Renderer (sigma.js + graphology) → WebGL Canvas
                                         ↓
                                   Adjacency Maps
                                   Search Index
@@ -75,9 +75,9 @@ User Interaction → React State → Graph Data Layer → Cosmograph Renderer �
 
 ### Visualization
 
-| Technology            | Version | Purpose                                    |
-| --------------------- | ------- | ------------------------------------------ |
-| **@cosmograph/react** | 2.3.2   | WebGL-based force-directed graph rendering |
+| Technology                | Version                | Purpose                                                |
+| ------------------------- | ---------------------- | ------------------------------------------------------ |
+| **sigma.js + graphology** | (see web/package.json) | WebGL-based graph rendering and graph model/algorithms |
 
 ### Styling
 
@@ -127,7 +127,7 @@ Complete graph state with derived structures including adjacency maps, node look
 
 #### Responsibilities
 
-1. Rendering Cosmograph canvas with WebGL visualization
+1. Rendering Sigma canvas with WebGL visualization
 2. State management for selection, hover, search
 3. Interaction handling (click, hover, search events)
 4. Simulation control (pause/resume physics)
@@ -137,9 +137,9 @@ Complete graph state with derived structures including adjacency maps, node look
 
 ## Graph Visualization System
 
-### Cosmograph Configuration
+### Sigma / Graphology Configuration
 
-The installed version of `@cosmograph/react` (2.3.2) exposes minimal physics configuration. The current implementation uses default Cosmograph force-directed layout with the following customizations:
+This project uses `sigma.js` for rendering and `graphology` (with optional force supervisors like ForceSupervisor or ForceAtlas2) for layout calculations. The UI exposes motion tuning controls for ForceAtlas2 (gravity, slowDown, scalingRatio, etc.) and an optional spring worker via `graphology-layout-force` when enabled.
 
 #### Position Stability
 
@@ -149,34 +149,30 @@ The installed version of `@cosmograph/react` (2.3.2) exposes minimal physics con
 
 ```typescript
 function getPseudoRandomOffset(seedString: string, range: number): number {
-  let hash = 0;
-  for (let i = 0; i < seedString.length; i++) {
-    hash = (Math.imul(31, hash) + seedString.charCodeAt(i)) | 0;
-  }
-  return ((Math.abs(hash) % 10000) / 10000 - 0.5) * range * 2;
+	let hash = 0;
+	for (let i = 0; i < seedString.length; i++) {
+		hash = (Math.imul(31, hash) + seedString.charCodeAt(i)) | 0;
+	}
+	return ((Math.abs(hash) % 10000) / 10000 - 0.5) * range * 2;
 }
 
 // Applied per-node:
-x: node.x ?? getPseudoRandomOffset(`${node.id}-x`, 10)
-y: node.y ?? getPseudoRandomOffset(`${node.id}-y`, 10)
+x: node.x ?? getPseudoRandomOffset(`${node.id}-x`, 10);
+y: node.y ?? getPseudoRandomOffset(`${node.id}-y`, 10);
 ```
 
 This ensures nodes maintain stable positions across re-renders while preventing zero-distance initialization.
 
 #### Available Customizations
 
-- Event handlers (`onPointClick`, `onPointMouseOver`, etc.)
+- Event handlers (`clickNode`, `clickStage`, etc.)
 - Node/link styling and sizing
-- Camera controls and viewport fitting
+- Camera controls and viewport fitting (via sigma camera API)
 - Selection and highlight rendering
 
 #### Physics Limitation
 
-Fine-grained force-directed parameters (repulsion, friction, gravity, spring constants) are **not exposed** by the installed Cosmograph version. Alternative approaches for custom physics:
-
-1. **Upgrade to newer Cosmograph** (if available with exposed APIs)
-2. **Switch to different library** (e.g., react-force-graph, sigma.js)
-3. **Custom WebGPU implementation** (see Future Architecture section)
+Fine-grained force-directed parameters can be tuned via ForceAtlas2 settings (exposed in the UI) or by using a dedicated force worker (graphology-layout-force). If more control is needed, the Rust/WASM `wasm-sim/` crate can be used to compute physics and stream positions back to the renderer.
 
 ### Node Types
 
@@ -259,25 +255,22 @@ Connect to FINRA BrokerCheck and SEC AdviserInfo APIs with file-backed canonical
 ### Phase 2: Custom Physics Control (Three Paths)
 
 #### Option A: Library Migration
+
 Switch to a library with exposed physics APIs (e.g., `react-force-graph`, `sigma.js`, `d3-force` directly). Provides immediate control without custom rendering.
 
-**Effort**: Days
-**Benefits**: Full physics tuning, mature ecosystem
-**Drawbacks**: May lose Cosmograph's WebGL optimizations
+**Effort**: Days **Benefits**: Full physics tuning, mature ecosystem **Drawbacks**: May lose Cosmograph's WebGL optimizations
 
 #### Option B: Hybrid Rust/WASM Physics
+
 Keep Cosmograph for rendering, but compute layout in the `wasm-sim/` crate using `petgraph` and force algorithms. Stream positions back to Cosmograph via Web Workers.
 
-**Effort**: 1-2 weeks
-**Benefits**: Rust performance, off-thread compute, keep current renderer
-**Drawbacks**: Complex data synchronization, requires Worker setup
+**Effort**: 1-2 weeks **Benefits**: Rust performance, off-thread compute, keep current renderer **Drawbacks**: Complex data synchronization, requires Worker setup
 
 #### Option C: Full WebGPU Rewrite
+
 Build complete visualization stack in Rust using `wgpu` crate. Write WGSL compute shaders for force-directed layout, render directly to canvas via WebGPU.
 
-**Effort**: 4-8 weeks
-**Benefits**: Maximum control, GPU-accelerated physics AND rendering, native performance
-**Drawbacks**: Rebuild entire interaction layer, browser compatibility (WebGPU not universal), no React integration
+**Effort**: 4-8 weeks **Benefits**: Maximum control, GPU-accelerated physics AND rendering, native performance **Drawbacks**: Rebuild entire interaction layer, browser compatibility (WebGPU not universal), no React integration
 
 **Recommendation**: Profile current implementation first. If bottleneck is layout math and node count >10K, pursue Option B. If rendering is also slow or custom effects needed, consider Option C.
 

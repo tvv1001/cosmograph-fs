@@ -4,6 +4,36 @@ use petgraph::visit::EdgeRef;
 use fjadra::Simulation;
 use fjadra::force::{ManyBody, Link, Center, SimulationBuilder};
 
+// Boundary handling modes exposed to JS
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum BoundaryMode {
+    None = 0,
+    Clamp = 1,
+}
+
+// Apply clamp bounds to an array of positions in-place.
+fn apply_bounds_to_positions(positions: &mut [[f64; 2]], bounds: [f64; 4]) {
+    let min_x = bounds[0].min(bounds[2]);
+    let max_x = bounds[0].max(bounds[2]);
+    let min_y = bounds[1].min(bounds[3]);
+    let max_y = bounds[1].max(bounds[3]);
+
+    for pos in positions.iter_mut() {
+        if pos[0] < min_x {
+            pos[0] = min_x;
+        } else if pos[0] > max_x {
+            pos[0] = max_x;
+        }
+
+        if pos[1] < min_y {
+            pos[1] = min_y;
+        } else if pos[1] > max_y {
+            pos[1] = max_y;
+        }
+    }
+}
+
 const DEFAULT_INITIAL_SPREAD: f64 = 100.0;
 const DEFAULT_LINK_DISTANCE: f64 = 30.0;
 const DEFAULT_CHARGE_STRENGTH: f64 = -30.0;
@@ -36,6 +66,9 @@ pub struct GraphSimulation {
     // Reused flat buffer for zero-copy position reads from JavaScript
     position_buffer: Vec<f32>,
     min_node_separation: f64,
+    // Optional viewport bounds: [min_x, min_y, max_x, max_y]
+    bounds: Option<[f64; 4]>,
+    boundary_mode: BoundaryMode,
 }
 
 impl Default for GraphSimulation {
@@ -54,6 +87,8 @@ impl GraphSimulation {
             initial_positions: Vec::new(),
             position_buffer: Vec::new(),
             min_node_separation: DEFAULT_MIN_NODE_SEPARATION + DEFAULT_NODE_SEPARATION_PADDING,
+            bounds: None,
+            boundary_mode: BoundaryMode::None,
         }
     }
 
@@ -106,6 +141,14 @@ impl GraphSimulation {
         let weighted_degrees = collect_weighted_degrees(&self.graph);
         self.initial_positions = seed_force_directed_positions(&self.graph, &weighted_degrees, resolved_link_distance, self.min_node_separation);
 
+        // If bounds are set and mode requests clamping, apply to initial positions so the
+        // simulation starts inside the viewport.
+        if let Some(bounds) = self.bounds {
+            if let BoundaryMode::Clamp = self.boundary_mode {
+                apply_bounds_to_positions(&mut self.initial_positions[..], bounds);
+            }
+        }
+
         let edges = expand_weighted_edges(&self.graph);
         let charge_multiplier = derive_charge_multiplier(&weighted_degrees);
 
@@ -130,6 +173,22 @@ impl GraphSimulation {
         }
     }
 
+    /// Set viewport bounds in simulation coordinate space.
+    /// `bounds` is [min_x, min_y, max_x, max_y].
+    pub fn set_bounds(&mut self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) {
+        self.bounds = Some([min_x, min_y, max_x, max_y]);
+    }
+
+    /// Clear any previously configured bounds.
+    pub fn clear_bounds(&mut self) {
+        self.bounds = None;
+    }
+
+    /// Choose a boundary mode; currently supports only Clamp.
+    pub fn set_boundary_mode(&mut self, mode: BoundaryMode) {
+        self.boundary_mode = mode;
+    }
+
     pub fn is_finished(&self) -> bool {
         if let Some(ref sim) = self.simulation {
             sim.is_finished()
@@ -148,10 +207,17 @@ impl GraphSimulation {
         let mut positions = self.collect_positions();
         resolve_overlaps(&mut positions, self.min_node_separation);
 
-        positions
-            .into_iter()
-            .flat_map(|p| [p[0] as f32, p[1] as f32])
-            .collect()
+        // Apply viewport bounds when requested before returning positions to JS
+        if let Some(bounds) = self.bounds {
+            if let BoundaryMode::Clamp = self.boundary_mode {
+                // clone into a mutable slice then clamp
+                let mut tmp = positions;
+                apply_bounds_to_positions(&mut tmp[..], bounds);
+                return tmp.into_iter().flat_map(|p| [p[0] as f32, p[1] as f32]).collect();
+            }
+        }
+
+        positions.into_iter().flat_map(|p| [p[0] as f32, p[1] as f32]).collect()
     }
 
     // Write positions into a persistent flat buffer and expose a raw pointer
@@ -167,6 +233,13 @@ impl GraphSimulation {
 
         let mut positions = self.collect_positions();
         resolve_overlaps(&mut positions, self.min_node_separation);
+
+        // Apply clamp bounds if configured
+        if let Some(bounds) = self.bounds {
+            if let BoundaryMode::Clamp = self.boundary_mode {
+                apply_bounds_to_positions(&mut positions[..], bounds);
+            }
+        }
 
         for position in positions {
             self.position_buffer.push(position[0] as f32);
