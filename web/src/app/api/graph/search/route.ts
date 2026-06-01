@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 const RAW_DATA_DIR = path.join(__dirname, '../../../../../../data/raw');
 const STARTUP_SEED_PEOPLE_COUNT = 7;
 const STARTUP_SEED_FIRM_COUNT = 4;
+const DEFAULT_NAMESPACE = 'finra';
 
 function getEndpointId(endpoint: string | GraphNode): string {
 	return typeof endpoint === 'string' ? endpoint : endpoint.id;
@@ -23,6 +24,20 @@ function normalizeText(value: unknown): string {
 		.replace(/\s+/g, ' ')
 		.trim()
 		.toLowerCase();
+}
+
+function buildNodeId(namespace: string, type: 'individual' | 'firm', crd: string): string {
+	return `${namespace}:${type}:${String(crd).trim()}`;
+}
+
+function getNodeNamespace(fallbackId?: string): string {
+	if (!fallbackId) return DEFAULT_NAMESPACE;
+	const [namespace] = fallbackId.split(':');
+	return namespace?.trim() || DEFAULT_NAMESPACE;
+}
+
+function getCanonicalNodeId(namespace: string, type: 'individual' | 'firm', fallbackId: string): string {
+	return fallbackId.includes(':') ? fallbackId : buildNodeId(namespace, type, fallbackId);
 }
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNode['kind']): number {
@@ -36,11 +51,11 @@ function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNode['kind']
 	return Math.min(36, (7 + degreeScale + (isHub ? 1.5 : 0)) * 1.5);
 }
 
-function createFirmNodeFromRaw(content: any, fallbackId: string): GraphNode {
+function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
 	const data = content.content ?? content;
 	const crd = String(data.basicInformation?.crd ?? data.basicInformation?.firmId ?? fallbackId);
 	const firmId = data.basicInformation?.firmId ?? fallbackId;
-	const id = `firm-${crd}`;
+	const id = getCanonicalNodeId(namespace, 'firm', fallbackId || crd);
 	const name = data.basicInformation?.firmName ?? data.basicInformation?.name ?? `Firm ${firmId}`;
 	const sec = String(data.basicInformation?.bdSECNumber ?? data.basicInformation?.sec ?? '');
 	const active = String(data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope ?? '').toLowerCase() === 'active';
@@ -60,7 +75,7 @@ function createFirmNodeFromRaw(content: any, fallbackId: string): GraphNode {
 		marker: 'B',
 		summary,
 		subtitle: data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope,
-		searchText: normalizeText(`${name} ${crd} ${sec} ${data.basicInformation?.firmBCScope ?? ''}`),
+		searchText: normalizeText(`${id} ${name} ${crd} ${sec} ${data.basicInformation?.firmBCScope ?? ''}`),
 		externalLinks: [],
 		detailSections: [
 			{
@@ -74,7 +89,7 @@ function createFirmNodeFromRaw(content: any, fallbackId: string): GraphNode {
 	};
 }
 
-function createPersonNodeFromRaw(content: any, fallbackId: string): GraphNode {
+function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
 	const data = content.content ?? content;
 	const basic = data.basicInformation ?? {};
 	const crd = String(basic.crd ?? basic.individualId ?? fallbackId);
@@ -86,9 +101,10 @@ function createPersonNodeFromRaw(content: any, fallbackId: string): GraphNode {
 	const otherNames = Array.isArray(basic.otherNames) ? basic.otherNames.map(String) : [];
 	const active = String(basic.bcScope ?? '').toLowerCase() === 'active';
 	const summary = `Individual profile for ${name}`;
+	const id = getCanonicalNodeId(namespace, 'individual', fallbackId || crd);
 
 	return {
-		id: `person-${crd}`,
+		id,
 		label: name,
 		kind: 'individual',
 		degreeHint: 0,
@@ -106,7 +122,7 @@ function createPersonNodeFromRaw(content: any, fallbackId: string): GraphNode {
 		middleName,
 		lastName,
 		otherNames,
-		searchText: normalizeText(`${name} ${otherNames.join(' ')} ${crd} ${individualId}`),
+		searchText: normalizeText(`${id} ${name} ${otherNames.join(' ')} ${crd} ${individualId}`),
 		externalLinks: individualId ? [{ label: 'BrokerCheck Profile', href: `https://brokercheck.finra.org/individual/summary/${individualId}` }] : [],
 		detailSections: [
 			{
@@ -130,15 +146,16 @@ function buildRawGraph() {
 		if (!fileName.endsWith('.json')) continue;
 		const filePath = path.join(RAW_DATA_DIR, fileName);
 		const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-		const [namespace, type, idPart] = fileName.replace(/\.json$/, '').split(':');
+		const fileStem = fileName.replace(/\.json$/, '');
+		const [namespace = DEFAULT_NAMESPACE, type] = fileStem.split(':');
 		if (type === 'firm') {
-			const firmNode = createFirmNodeFromRaw(raw, idPart);
+			const firmNode = createFirmNodeFromRaw(raw, fileStem, namespace);
 			nodesById.set(firmNode.id, firmNode);
 			continue;
 		}
 
 		if (type === 'individual') {
-			const personNode = createPersonNodeFromRaw(raw, idPart);
+			const personNode = createPersonNodeFromRaw(raw, fileStem, namespace);
 			nodesById.set(personNode.id, personNode);
 
 			const content = raw.content ?? raw;
@@ -148,8 +165,9 @@ function buildRawGraph() {
 			for (const employment of currentEmployments) {
 				const firmId = String(employment.firmId ?? '');
 				if (!firmId) continue;
+				const sec = String(employment.bdSECNumber ?? employment.iaSECNumber ?? '').trim();
 
-				const firmKey = `firm-${firmId}`;
+				const firmKey = buildNodeId(namespace, 'firm', firmId);
 				if (!nodesById.has(firmKey)) {
 					const firmNode: GraphNode = {
 						id: firmKey,
@@ -160,13 +178,22 @@ function buildRawGraph() {
 						isHub: true,
 						isActive: String(employment.firmBCScope ?? '').toLowerCase() === 'active',
 						title: String(employment.firmName ?? `Firm ${firmId}`),
-						identifierLine: `CRD#: ${employment.bdSECNumber ?? ''}`,
+						identifierLine: `CRD#: ${firmId}${sec ? ` / SEC#: ${sec}` : ''}`,
 						badges: [{ label: employment.firmBCScope ?? 'Firm', tone: 'neutral' }],
 						marker: 'B',
-						summary: String(employment.firmName ?? `Firm ${firmId}`),
-						searchText: normalizeText(`${employment.firmName ?? ''} ${employment.bdSECNumber ?? ''}`),
+						summary: `Firm profile for ${employment.firmName ?? `Firm ${firmId}`}`,
+						subtitle: employment.firmBCScope ?? undefined,
+						searchText: normalizeText(`${firmKey} ${employment.firmName ?? ''} ${firmId} ${sec}`),
 						externalLinks: [],
-						detailSections: [],
+						detailSections: [
+							{
+								title: 'Registration',
+								items: [
+									{ label: 'CRD', value: firmId },
+									{ label: 'SEC number', value: sec || '—' },
+								],
+							},
+						],
 					};
 					nodesById.set(firmKey, firmNode);
 				}
@@ -182,8 +209,9 @@ function buildRawGraph() {
 			for (const employment of previousEmployments) {
 				const firmId = String(employment.firmId ?? '');
 				if (!firmId) continue;
+				const sec = String(employment.bdSECNumber ?? employment.iaSECNumber ?? '').trim();
 
-				const firmKey = `firm-${firmId}`;
+				const firmKey = buildNodeId(namespace, 'firm', firmId);
 				if (!nodesById.has(firmKey)) {
 					const firmNode: GraphNode = {
 						id: firmKey,
@@ -194,13 +222,22 @@ function buildRawGraph() {
 						isHub: true,
 						isActive: String(employment.firmBCScope ?? '').toLowerCase() === 'active',
 						title: String(employment.firmName ?? `Firm ${firmId}`),
-						identifierLine: `CRD#: ${employment.bdSECNumber ?? ''}`,
+						identifierLine: `CRD#: ${firmId}${sec ? ` / SEC#: ${sec}` : ''}`,
 						badges: [{ label: employment.firmBCScope ?? 'Firm', tone: 'neutral' }],
 						marker: 'B',
-						summary: String(employment.firmName ?? `Firm ${firmId}`),
-						searchText: normalizeText(`${employment.firmName ?? ''} ${employment.bdSECNumber ?? ''}`),
+						summary: `Firm profile for ${employment.firmName ?? `Firm ${firmId}`}`,
+						subtitle: employment.firmBCScope ?? undefined,
+						searchText: normalizeText(`${firmKey} ${employment.firmName ?? ''} ${firmId} ${sec}`),
 						externalLinks: [],
-						detailSections: [],
+						detailSections: [
+							{
+								title: 'Registration',
+								items: [
+									{ label: 'CRD', value: firmId },
+									{ label: 'SEC number', value: sec || '—' },
+								],
+							},
+						],
 					};
 					nodesById.set(firmKey, firmNode);
 				}

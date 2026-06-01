@@ -50,10 +50,13 @@ export interface GraphNode {
 	otherNames?: string[];
 	x?: number;
 	y?: number;
+	z?: number;
 	vx?: number;
 	vy?: number;
+	vz?: number;
 	fx?: number;
 	fy?: number;
+	fz?: number;
 }
 
 export interface GraphLink {
@@ -73,6 +76,7 @@ export interface ForceLayoutConfig {
 	warmupTicks: number;
 	cooldownTicks: number;
 	collisionPadding: number;
+	hubGravityStrength: number;
 	neighborhoodSpread: number;
 	focusZoom: number;
 	reheatOnSelect: boolean;
@@ -127,16 +131,17 @@ export interface SearchRevealResult {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	chargeStrength: -108,
-	linkDistance: 86,
+	chargeStrength: -142,
+	linkDistance: 146,
 	linkStrength: 0.16,
-	velocityDecay: 0.32,
+	velocityDecay: 0.29,
 	alphaDecay: 0.048,
 	alphaMin: 0.004,
 	warmupTicks: 42,
 	cooldownTicks: 220,
-	collisionPadding: 9,
-	neighborhoodSpread: 44,
+	collisionPadding: 15,
+	hubGravityStrength: 0.042,
+	neighborhoodSpread: 75,
 	focusZoom: 1.75,
 	reheatOnSelect: true,
 };

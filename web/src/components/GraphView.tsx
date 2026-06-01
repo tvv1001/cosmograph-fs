@@ -1,5 +1,6 @@
 'use client';
 
+import { forceCollide } from 'd3-force-3d';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { ForceGraphMethods, ForceGraphProps, LinkObject, NodeObject } from 'react-force-graph-2d';
@@ -36,6 +37,28 @@ type LinkForce = {
 	iterations?: (iterations: number) => LinkForce;
 };
 
+type CollideForce = {
+	radius: (radius: number | ((node: NodeObject<GraphNode>) => number)) => CollideForce;
+	strength?: (strength: number) => CollideForce;
+	iterations?: (iterations: number) => CollideForce;
+};
+
+type SimulatedGraphNode = NodeObject<GraphNode> & {
+	size: number;
+	degreeHint: number;
+	isHub: boolean;
+	x?: number;
+	y?: number;
+	z?: number;
+	vx?: number;
+	vy?: number;
+	vz?: number;
+};
+
+type SimulationForce<NodeDatum> = ((alpha: number) => void) & {
+	initialize?: (nodes: NodeDatum[]) => void;
+};
+
 const MIN_NODE_HIT_RADIUS_PX = 14;
 const NODE_HIT_RADIUS_PADDING_PX = 6;
 const MIN_NODE_LABEL_FONT_SIZE_PX = 3.5;
@@ -47,6 +70,39 @@ const LARGE_GRAPH_RENDER_THRESHOLD = 1500;
 const CLICK_REVEAL_HOPS = 3;
 const CLICK_REVEAL_STEP_DELAY_MS = 320;
 const CLICK_REVEAL_HIGHLIGHT_MS = 1100;
+
+function createWeightedGravityForce(gravityStrength: number): SimulationForce<SimulatedGraphNode> {
+	let nodes: SimulatedGraphNode[] = [];
+	let maxNodeSize = 1;
+	let maxDegreeHint = 1;
+
+	const force = ((alpha: number) => {
+		for (const node of nodes) {
+			const normalizedSize = Math.max(0, (node.size ?? 0) / maxNodeSize);
+			const normalizedDegree = Math.max(0, (node.degreeHint ?? 0) / maxDegreeHint);
+			const nodeMass = normalizedSize * 0.65 + normalizedDegree * 0.35;
+			if (nodeMass < 0.18 && !node.isHub) {
+				continue;
+			}
+
+			const pullStrength = gravityStrength * Math.pow(nodeMass, 1.35) * (node.isHub ? 1.25 : 1) * alpha;
+			node.vx = (node.vx ?? 0) - (node.x ?? 0) * pullStrength;
+			node.vy = (node.vy ?? 0) - (node.y ?? 0) * pullStrength;
+
+			if (typeof node.z === 'number') {
+				node.vz = (node.vz ?? 0) - node.z * pullStrength;
+			}
+		}
+	}) as SimulationForce<SimulatedGraphNode>;
+
+	force.initialize = (nextNodes: SimulatedGraphNode[]) => {
+		nodes = nextNodes;
+		maxNodeSize = Math.max(1, ...nodes.map((node) => node.size ?? 0));
+		maxDegreeHint = Math.max(1, ...nodes.map((node) => node.degreeHint ?? 0));
+	};
+
+	return force;
+}
 
 function traceNodeShapePath(ctx: CanvasRenderingContext2D, node: GraphNode, radius: number): void {
 	if (node.kind === 'individual') {
@@ -290,7 +346,7 @@ export default function GraphView() {
 	const revealHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const [forceGraph2D, setForceGraph2D] = useState<ForceGraphComponentType | null>(null);
 	const [forceGraph3D, setForceGraph3D] = useState<ForceGraphComponentType | null>(null);
-	const [graphMode, setGraphMode] = useState<GraphMode>('3d');
+	const [graphMode, setGraphMode] = useState<GraphMode>('2d');
 	const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set());
 	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 	const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -553,13 +609,29 @@ export default function GraphView() {
 		}
 
 		const chargeForce = graph.d3Force('charge') as ChargeForce | undefined;
-		chargeForce?.strength((node) => (node.isHub ? dataset.force.chargeStrength * 1.25 : dataset.force.chargeStrength));
-		chargeForce?.distanceMax?.(dataset.force.linkDistance * 7);
+		chargeForce?.strength((node) => {
+			const normalizedSize = Math.max((node.size ?? 0) / 54, 0.45);
+			const hubBoost = node.isHub ? 1.3 : 1;
+			return dataset.force.chargeStrength * (1 + normalizedSize * 0.55) * hubBoost;
+		});
+		chargeForce?.distanceMax?.(dataset.force.linkDistance * 10);
 
 		const linkForce = graph.d3Force('link') as LinkForce | undefined;
-		linkForce?.distance((link) => dataset.force.linkDistance + ((link.weight ?? 1) - 1) * 10);
+		linkForce?.distance((link) => {
+			const sourceNode = link.source as GraphNode | string;
+			const targetNode = link.target as GraphNode | string;
+			const sourceSize = typeof sourceNode === 'string' ? (dataset.nodeById.get(sourceNode)?.size ?? 0) : (sourceNode.size ?? 0);
+			const targetSize = typeof targetNode === 'string' ? (dataset.nodeById.get(targetNode)?.size ?? 0) : (targetNode.size ?? 0);
+			return dataset.force.linkDistance + ((link.weight ?? 1) - 1) * 12 + (sourceSize + targetSize) * 0.2;
+		});
 		linkForce?.strength((link) => dataset.force.linkStrength + ((link.weight ?? 1) - 1) * 0.04);
 		linkForce?.iterations?.(2);
+
+		const collideForce = forceCollide<NodeObject<GraphNode>>().radius((node) => Math.max(node.size * 1.15 + dataset.force.collisionPadding, 6));
+		collideForce.strength?.(0.95);
+		collideForce.iterations?.(isLargeGraph ? 1 : 3);
+		graph.d3Force('collide', collideForce);
+		graph.d3Force('weighted-gravity', createWeightedGravityForce(dataset.force.hubGravityStrength));
 
 		if (skipNextAutoFitRef.current) {
 			skipNextAutoFitRef.current = false;
@@ -814,7 +886,7 @@ export default function GraphView() {
 				case 'employment':
 					return '#38bdf8';
 				case 'disclosure':
-					return 'rgba(148, 163, 184, 0.8)';
+					return 'rgba(148, 163, 184, 0.92)';
 				case 'control':
 					return '#f87171';
 				case 'peer':
@@ -881,25 +953,21 @@ export default function GraphView() {
 			const isCycleLink = cycleLinkIds.has(getLinkKey(link));
 			const faded = traceMode && selectedNodeId && !isHighlighted;
 			const disclosureLink = isPreviousLink(link);
-			const dashed = disclosureLink || isInactiveLink(link);
+			// Explicit color and dash rules: solid blue for current (employment), dashed gray for previous (disclosure)
+			const linkColor = disclosureLink ? 'rgba(148,163,184,0.9)' : '#38bdf8';
+			const dashed = disclosureLink;
 
 			ctx.save();
 			ctx.globalAlpha =
-				faded ? 0.12
+				faded ? 0.18
 				: isHighlighted ? 1
 				: isCycleLink ? 0.96
-				: disclosureLink ? 0.72
-				: 0.62;
-			ctx.strokeStyle = getLinkTypeColor(link);
-			ctx.lineWidth = Math.max(
-				isHighlighted ? dataset.visual.activeLinkWidth
-				: isCycleLink ? dataset.visual.cycleLinkWidth
-				: dataset.visual.linkWidth + ((link.weight ?? 1) - 1) * 0.25,
-				isLargeGraph ? 0.9 : 1.2,
-			);
+				: 1;
+			ctx.strokeStyle = linkColor;
+			ctx.lineWidth = Math.max(isHighlighted ? dataset.visual.activeLinkWidth : dataset.visual.linkWidth + ((link.weight ?? 1) - 1) * 0.25, 1.4);
 			ctx.shadowBlur = isCycleLink ? 12 / globalScale : 0;
 			ctx.shadowColor = isCycleLink ? dataset.visual.cycleLinkColor : 'transparent';
-			ctx.setLineDash(dashed ? [4 / globalScale, 4 / globalScale] : []);
+			ctx.setLineDash(dashed ? [6 / globalScale, 6 / globalScale] : []);
 			ctx.beginPath();
 			ctx.moveTo(source.x ?? 0, source.y ?? 0);
 			ctx.lineTo(target.x ?? 0, target.y ?? 0);
@@ -1290,10 +1358,7 @@ export default function GraphView() {
 								: cycleLinkIds.has(getLinkKey(link as GraphLink)) ? dataset.visual.cycleLinkWidth
 								: dataset.visual.linkWidth + ((link.weight ?? 1) - 1) * 0.25
 							}
-							linkColor={(link: GraphLink) => {
-								if (isPreviousLink(link)) return 'rgba(148, 163, 184, 0)';
-								return getLinkTypeColor(link as GraphLink);
-							}}
+							linkColor={(link: GraphLink) => getLinkTypeColor(link as GraphLink)}
 							d3AlphaMin={dataset.force.alphaMin}
 							d3AlphaDecay={dataset.force.alphaDecay}
 							d3VelocityDecay={dataset.force.velocityDecay}
