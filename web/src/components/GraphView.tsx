@@ -64,6 +64,10 @@ const NODE_HIT_RADIUS_PADDING_PX = 6;
 const MIN_NODE_LABEL_FONT_SIZE_PX = 3.5;
 const NODE_LABEL_FONT_SIZE_PX = 10;
 const NODE_LABEL_PADDING_PX = 4;
+const MIN_LABEL_FONT_SIZE_WHEN_ZOOMED_OUT_PX = 20;
+// Desired on-screen font size in pixels when labels should remain static on-screen
+const STATIC_LABEL_ONSCREEN_PX = 20;
+const STATIC_LABEL_PADDING_ONSCREEN_PX = 8;
 const INITIAL_SEED_PEOPLE_COUNT = 7;
 const INITIAL_SEED_FIRM_COUNT = 4;
 const LARGE_GRAPH_RENDER_THRESHOLD = 1500;
@@ -106,8 +110,16 @@ function createWeightedGravityForce(gravityStrength: number): SimulationForce<Si
 
 function traceNodeShapePath(ctx: CanvasRenderingContext2D, node: GraphNode, radius: number): void {
 	if (node.kind === 'individual') {
+		// draw a rotated square (diamond) so the top forms a pointed apex
+		const cx = node.x ?? 0;
+		const cy = node.y ?? 0;
 		const size = radius * 2;
-		ctx.rect((node.x ?? 0) - radius, (node.y ?? 0) - radius, size, size);
+		ctx.save();
+		ctx.translate(cx, cy);
+		// rotate 45 degrees to give a triangular/top-pointed look
+		ctx.rotate(Math.PI / 4);
+		ctx.rect(-radius, -radius, size, size);
+		ctx.restore();
 		return;
 	}
 
@@ -219,9 +231,15 @@ function createNodeLabelSprite(label: string, textColor: string, backgroundColor
 }
 
 function getNodeLabelMetrics(node: GraphNode, globalScale: number): { fontSize: number; labelY: number; labelPadding: number } {
-	const fontSize = Math.max(NODE_LABEL_FONT_SIZE_PX / globalScale, MIN_NODE_LABEL_FONT_SIZE_PX);
-	const labelPadding = NODE_LABEL_PADDING_PX / globalScale;
-	const labelY = (node.y ?? 0) - node.size - fontSize;
+	// Use a static on-screen font size so labels remain the same pixel size
+	// regardless of zoom. Compute the canvas font size that results in the
+	// desired on-screen pixels by dividing by the current globalScale.
+	const desiredOnScreen = STATIC_LABEL_ONSCREEN_PX;
+	const fontSize = globalScale > 0.0001 ? desiredOnScreen / globalScale : desiredOnScreen;
+
+	// Padding should also be static on-screen pixels.
+	const labelPadding = globalScale > 0.0001 ? STATIC_LABEL_PADDING_ONSCREEN_PX / globalScale : STATIC_LABEL_PADDING_ONSCREEN_PX;
+	const labelY = (node.y ?? 0) - node.size - desiredOnScreen;
 
 	return { fontSize, labelY, labelPadding };
 }
@@ -284,59 +302,13 @@ function getNodeHopLayers(adjacency: Map<string, Set<string>>, startNodeId: stri
 }
 
 function getCycleLinkIds(links: GraphLink[], nodeById: Map<string, GraphNode>): Set<string> {
-	const adjacency = new Map<string, string[]>();
-	const nodeIds = new Set<string>();
-	const activeLinks = links.filter((link) => {
-		const sourceNode = nodeById.get(getEndpointId(link.source));
-		const targetNode = nodeById.get(getEndpointId(link.target));
-		if (!sourceNode || !targetNode) {
-			return false;
-		}
-
-		return !isNodeInactive(sourceNode) && !isNodeInactive(targetNode);
-	});
-
-	for (const link of activeLinks) {
-		const source = getEndpointId(link.source);
-		const target = getEndpointId(link.target);
-		nodeIds.add(source);
-		nodeIds.add(target);
-		adjacency.set(source, [...(adjacency.get(source) ?? []), target]);
-		adjacency.set(target, [...(adjacency.get(target) ?? []), source]);
-	}
-
-	const discoveryTimes = new Map<string, number>();
-	const lowLinkValues = new Map<string, number>();
-	const bridgeLinkIds = new Set<string>();
-	let currentTime = 0;
-
-	const visit = (nodeId: string, parentNodeId: string | null) => {
-		discoveryTimes.set(nodeId, currentTime);
-		lowLinkValues.set(nodeId, currentTime);
-		currentTime += 1;
-
-		for (const neighborId of adjacency.get(nodeId) ?? []) {
-			if (!discoveryTimes.has(neighborId)) {
-				visit(neighborId, nodeId);
-				lowLinkValues.set(nodeId, Math.min(lowLinkValues.get(nodeId) ?? Number.POSITIVE_INFINITY, lowLinkValues.get(neighborId) ?? Number.POSITIVE_INFINITY));
-
-				if ((lowLinkValues.get(neighborId) ?? Number.POSITIVE_INFINITY) > (discoveryTimes.get(nodeId) ?? Number.NEGATIVE_INFINITY)) {
-					bridgeLinkIds.add(nodeId < neighborId ? `${nodeId}:${neighborId}` : `${neighborId}:${nodeId}`);
-				}
-			} else if (neighborId !== parentNodeId) {
-				lowLinkValues.set(nodeId, Math.min(lowLinkValues.get(nodeId) ?? Number.POSITIVE_INFINITY, discoveryTimes.get(neighborId) ?? Number.POSITIVE_INFINITY));
-			}
-		}
-	};
-
-	for (const nodeId of nodeIds) {
-		if (!discoveryTimes.has(nodeId)) {
-			visit(nodeId, null);
-		}
-	}
-
-	return new Set(activeLinks.map((link) => getLinkKey(link)).filter((linkId) => !bridgeLinkIds.has(linkId)));
+	// Cycle highlighting is disabled — return empty set so no special purple styling is applied.
+	return new Set<string>();
 }
+
+// Minimum canvas globalScale at which labels are shown in 2D. When zoomed out below this
+// scale, labels are hidden to reduce clutter. Increase to hide labels earlier.
+const LABEL_MIN_SCALE_FOR_LABELS = 0.55;
 
 export default function GraphView() {
 	const [dataset, setDataset] = useState<GraphDataset>(() => createGraphDataset());
@@ -349,6 +321,7 @@ export default function GraphView() {
 	const [graphMode, setGraphMode] = useState<GraphMode>('2d');
 	const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => new Set());
 	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+	const [visitedNodeIds, setVisitedNodeIds] = useState<Set<string>>(() => new Set());
 	const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 	const [recentlyRevealedNodeIds, setRecentlyRevealedNodeIds] = useState<Set<string>>(() => new Set());
 	const [searchQuery, setSearchQuery] = useState('');
@@ -568,7 +541,7 @@ export default function GraphView() {
 				return;
 			}
 
-			const stored = JSON.parse(raw) as { nodeIds: string[]; savedAt?: string } | null;
+			const stored = JSON.parse(raw) as { nodeIds: string[]; selectedNodeId?: string; visitedNodeIds?: string[]; savedAt?: string } | null;
 			if (!stored?.nodeIds?.length) {
 				loadInitialNodes();
 				return;
@@ -584,6 +557,43 @@ export default function GraphView() {
 			setVisibleNodeIds(new Set(stored.nodeIds));
 			setStatusMessage('Restored visible nodes from previous session.');
 			appendLog('Restored visible nodes from local storage.');
+
+			if (stored.selectedNodeId) {
+				const node = dataset.nodeById.get(stored.selectedNodeId);
+				if (node) {
+					setSelectedNodeId(stored.selectedNodeId);
+					setMenuOpen(true);
+					setShowInfo(true);
+					centerOnNode(stored.selectedNodeId, { reheat: true });
+					appendLog(`Restored selected node ${stored.selectedNodeId} from local storage.`);
+				}
+			}
+			if (stored.visitedNodeIds?.length) {
+				setVisitedNodeIds(new Set(stored.visitedNodeIds));
+				appendLog(`Restored ${stored.visitedNodeIds.length} visited nodes from local storage.`);
+			}
+			// If any of the stored node ids do not exist in our in-memory dataset, fetch the full dataset
+			const missing = Array.from(stored.nodeIds).some((id) => !dataset.nodeById.has(id));
+			if (missing) {
+				(async () => {
+					try {
+						const resp = await fetch('/api/graph/search?all=true');
+						if (resp.ok) {
+							const result = await resp.json();
+							mergeGraphData({ nodes: result.visibleNodes, links: result.visibleLinks });
+							// ensure visible nodes are set after merging
+							setVisibleNodeIds(new Set(stored.nodeIds));
+							if (stored.selectedNodeId && dataset.nodeById.has(stored.selectedNodeId)) {
+								setSelectedNodeId(stored.selectedNodeId);
+								centerOnNode(stored.selectedNodeId, { reheat: true });
+							}
+							appendLog('Fetched full dataset to restore saved visible nodes.');
+						}
+					} catch (e) {
+						// ignore fetch failures and continue
+					}
+				})();
+			}
 		} catch {
 			// Ignore storage failures and continue with the empty graph.
 			loadInitialNodes();
@@ -596,11 +606,19 @@ export default function GraphView() {
 		}
 
 		try {
-			window.localStorage.setItem(VISIBLE_NODE_IDS_STORAGE_KEY, JSON.stringify({ nodeIds: Array.from(visibleNodeIds), savedAt: new Date().toISOString() }));
+			window.localStorage.setItem(
+				VISIBLE_NODE_IDS_STORAGE_KEY,
+				JSON.stringify({
+					nodeIds: Array.from(visibleNodeIds),
+					selectedNodeId: selectedNodeId ?? null,
+					visitedNodeIds: Array.from(visitedNodeIds),
+					savedAt: new Date().toISOString(),
+				}),
+			);
 		} catch {
 			// Ignore storage failures.
 		}
-	}, [visibleNodeIds]);
+	}, [visibleNodeIds, selectedNodeId, visitedNodeIds]);
 
 	useEffect(() => {
 		const graph = graphRef.current;
@@ -665,58 +683,105 @@ export default function GraphView() {
 	const handleNodeClick = useCallback(
 		(node: NodeObject<GraphNode>) => {
 			const typedNode = node as GraphNode;
-			const hopLayers = getNodeHopLayers(dataset.adjacency, typedNode.id, CLICK_REVEAL_HOPS)
-				.map((nodeIds) => nodeIds.filter((nodeId) => !visibleNodeIds.has(nodeId)))
-				.filter((nodeIds) => nodeIds.length > 0);
-			const totalNewNodeCount = hopLayers.reduce((count, nodeIds) => count + nodeIds.length, 0);
-
 			clearRevealTimers();
 			skipNextAutoFitRef.current = true;
 			setRecentlyRevealedNodeIds(new Set());
-			setVisibleNodeIds((currentVisibleNodeIds) => {
-				const nextVisibleNodeIds = new Set(currentVisibleNodeIds);
-				nextVisibleNodeIds.add(typedNode.id);
-				return nextVisibleNodeIds;
-			});
 			setSelectedNodeId(typedNode.id);
+			setVisitedNodeIds((prev) => {
+				const next = new Set(prev);
+				next.add(typedNode.id);
+				return next;
+			});
 			setMenuOpen(true);
 			setShowInfo(true);
-			if (hopLayers.length === 0) {
-				setStatusMessage(`Selected ${typedNode.title}. No new connected nodes to reveal.`);
-				appendLog(`Selected ${typedNode.title}. No additional connected nodes were revealed.`);
+
+			if (typedNode.kind === 'individual') {
+				// Reveal up to CLICK_REVEAL_HOPS hops for a person node, but follow directed child edges only (source -> target)
+				const directedChildren = new Map<string, Set<string>>();
+				for (const link of dataset.graphData.links) {
+					const src = getEndpointId(link.source);
+					const tgt = getEndpointId(link.target);
+					if (!directedChildren.has(src)) directedChildren.set(src, new Set());
+					directedChildren.get(src)?.add(tgt);
+				}
+				const hopLayers: string[][] = [];
+				let frontier = [typedNode.id];
+				const visited = new Set<string>([typedNode.id]);
+				for (let depth = 0; depth < CLICK_REVEAL_HOPS; depth += 1) {
+					const nextLayer: string[] = [];
+					for (const nid of frontier) {
+						for (const childId of directedChildren.get(nid) ?? new Set()) {
+							if (visited.has(childId)) continue;
+							visited.add(childId);
+							nextLayer.push(childId);
+						}
+					}
+					if (nextLayer.length === 0) break;
+					hopLayers.push(nextLayer);
+					frontier = nextLayer;
+				}
+				const nodesToAdd = new Set<string>([typedNode.id]);
+				hopLayers.forEach((layer) => layer.forEach((id) => nodesToAdd.add(id)));
+				setVisibleNodeIds((current) => {
+					const next = new Set(current);
+					for (const id of nodesToAdd) next.add(id);
+					return next;
+				});
+				const firstHop = hopLayers[0] ?? [];
+				setRecentlyRevealedNodeIds(new Set(firstHop));
+				graphRef.current?.d3ReheatSimulation();
+				setStatusMessage(`Selected ${typedNode.title}. Revealed ${nodesToAdd.size - 1} connected nodes up to ${CLICK_REVEAL_HOPS} hops.`);
+				appendLog(`Selected ${typedNode.title}. Revealed ${nodesToAdd.size - 1} nodes (up to ${CLICK_REVEAL_HOPS} hops).`);
+				if (revealHighlightTimeoutRef.current) clearTimeout(revealHighlightTimeoutRef.current);
+				revealHighlightTimeoutRef.current = setTimeout(() => {
+					setRecentlyRevealedNodeIds(new Set());
+					revealHighlightTimeoutRef.current = null;
+				}, CLICK_REVEAL_HIGHLIGHT_MS);
 				return;
 			}
 
-			setStatusMessage(`Selected ${typedNode.title}. Revealing connected nodes hop-by-hop...`);
-			appendLog(`Selected ${typedNode.title}. Revealing ${totalNewNodeCount} nodes across ${hopLayers.length} hops.`);
+			if (typedNode.kind === 'firm') {
+				// For firms, only show direct employees/buyers who have control positions (relationship 'control' or 'employment')
+				const links = dataset.linksByNodeId.get(typedNode.id) ?? [];
+				const matched = new Set<string>();
+				for (const link of links) {
+					if (!(link.relationship === 'control' || link.relationship === 'employment')) continue;
+					const otherId = getEndpointId(link.source) === typedNode.id ? getEndpointId(link.target) : getEndpointId(link.source);
+					const otherNode = dataset.nodeById.get(otherId);
+					if (otherNode && otherNode.kind === 'individual') matched.add(otherId);
+				}
+				setVisibleNodeIds((current) => {
+					const next = new Set(current);
+					next.add(typedNode.id);
+					for (const id of matched) next.add(id);
+					return next;
+				});
+				setRecentlyRevealedNodeIds(new Set(matched));
+				graphRef.current?.d3ReheatSimulation();
+				setStatusMessage(`Selected ${typedNode.title}. Showing ${matched.size} direct employees/controls.`);
+				appendLog(`Selected ${typedNode.title}. Revealed ${matched.size} direct employees/controls.`);
+				if (revealHighlightTimeoutRef.current) clearTimeout(revealHighlightTimeoutRef.current);
+				revealHighlightTimeoutRef.current = setTimeout(() => {
+					setRecentlyRevealedNodeIds(new Set());
+					revealHighlightTimeoutRef.current = null;
+				}, CLICK_REVEAL_HIGHLIGHT_MS);
+				return;
+			}
 
-			hopLayers.forEach((nodeIds, index) => {
-				const timeoutId = setTimeout(() => {
-					skipNextAutoFitRef.current = true;
-					setVisibleNodeIds((currentVisibleNodeIds) => {
-						const nextVisibleNodeIds = new Set(currentVisibleNodeIds);
-						for (const nodeId of nodeIds) {
-							nextVisibleNodeIds.add(nodeId);
-						}
-						return nextVisibleNodeIds;
-					});
-					setRecentlyRevealedNodeIds(new Set(nodeIds));
-					graphRef.current?.d3ReheatSimulation();
-					setStatusMessage(`Selected ${typedNode.title}. Revealed hop ${index + 1} of ${hopLayers.length}.`);
-
-					if (revealHighlightTimeoutRef.current) {
-						clearTimeout(revealHighlightTimeoutRef.current);
-					}
-					revealHighlightTimeoutRef.current = setTimeout(() => {
-						setRecentlyRevealedNodeIds(new Set());
-						revealHighlightTimeoutRef.current = null;
-					}, CLICK_REVEAL_HIGHLIGHT_MS);
-				}, index * CLICK_REVEAL_STEP_DELAY_MS);
-
-				revealTimeoutIdsRef.current.push(timeoutId);
+			// Fallback: reveal direct neighbors
+			setVisibleNodeIds((currentVisibleNodeIds) => {
+				const nextVisibleNodeIds = new Set(currentVisibleNodeIds);
+				nextVisibleNodeIds.add(typedNode.id);
+				for (const neighborId of dataset.adjacency.get(typedNode.id) ?? []) {
+					nextVisibleNodeIds.add(neighborId);
+				}
+				return nextVisibleNodeIds;
 			});
+			setStatusMessage(`Selected ${typedNode.title}. Revealed direct neighbors.`);
+			appendLog(`Selected ${typedNode.title}. Revealed ${Array.from(dataset.adjacency.get(typedNode.id) ?? []).length} neighbors.`);
+			graphRef.current?.d3ReheatSimulation();
 		},
-		[appendLog, clearRevealTimers, dataset, visibleNodeIds],
+		[appendLog, clearRevealTimers, dataset, centerOnNode],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
@@ -769,13 +834,8 @@ export default function GraphView() {
 
 				mergeGraphData({ nodes: result.visibleNodes, links: result.visibleLinks });
 
-				setVisibleNodeIds((current) => {
-					const next = new Set(current);
-					for (const nodeId of result.visibleNodeIds) {
-						next.add(nodeId);
-					}
-					return next;
-				});
+				// Replace visible nodes with the fetched result so only the fetched node and its connections are shown
+				setVisibleNodeIds(new Set(result.visibleNodeIds));
 
 				setStatusMessage(result.message);
 
@@ -854,7 +914,9 @@ export default function GraphView() {
 	const getLinkNode = useCallback(
 		(endpoint: string | GraphNode): GraphNode | null => {
 			const nodeId = typeof endpoint === 'string' ? endpoint : endpoint.id;
-			return dataset.nodeById.get(nodeId) ?? (typeof endpoint === 'string' ? null : endpoint);
+			// Always resolve link endpoints to the canonical node stored in dataset.nodeById.
+			// Returning the original endpoint object can lead to mismatched instances without position data.
+			return dataset.nodeById.get(nodeId) ?? null;
 		},
 		[dataset.nodeById],
 	);
@@ -901,11 +963,18 @@ export default function GraphView() {
 	const createNodeThreeObject = useCallback(
 		(node: GraphNode) => {
 			const isSelected = selectedNodeId === node.id;
+			const isVisited = visitedNodeIds.has(node.id);
 			const isRecentlyRevealed = recentlyRevealedNodeIds.has(node.id);
-			const nodeColor =
-				isSelected ? dataset.visual.activeNodeColor
-				: isRecentlyRevealed ? dataset.visual.activeLinkColor
-				: dataset.visual.nodeColors[node.kind];
+			let nodeColor = isRecentlyRevealed ? dataset.visual.activeLinkColor : dataset.visual.nodeColors[node.kind];
+			if (isVisited && !isSelected) {
+				if (node.kind === 'firm') nodeColor = '#b45309';
+				else if (node.kind === 'individual') nodeColor = '#1e40af';
+			}
+			if (isSelected) {
+				if (node.kind === 'firm') nodeColor = '#b45309';
+				else if (node.kind === 'individual') nodeColor = '#1e40af';
+				else nodeColor = dataset.visual.activeNodeColor;
+			}
 			const baseRadius = Math.max(node.size * 0.5, 4.2);
 			const geometry =
 				node.kind === 'firm' ? new THREE.CylinderGeometry(baseRadius, baseRadius, Math.max(baseRadius * 0.45, 2.6), 6)
@@ -917,6 +986,41 @@ export default function GraphView() {
 				opacity: isRecentlyRevealed ? 1 : 0.95,
 			});
 			const mesh = new THREE.Mesh(geometry, material);
+
+			// rotate individuals so they appear as a diamond/triangular-top in 3D as well
+			if (node.kind === 'individual') {
+				mesh.rotation.z = Math.PI / 4;
+			}
+
+			// add a subtle black outline behind selected or visited nodes to simulate a pressed/visited border
+			if (isSelected || (isVisited && !isSelected)) {
+				try {
+					const outlineGeom = geometry.clone();
+					const outlineMat = new THREE.MeshBasicMaterial({ color: 'black' });
+					const outlineMesh = new THREE.Mesh(outlineGeom, outlineMat);
+					outlineMesh.scale.set(isSelected ? 1.12 : 1.08, isSelected ? 1.12 : 1.08, isSelected ? 1.12 : 1.08);
+					outlineMesh.renderOrder = 0;
+					mesh.renderOrder = 1;
+					// group will add outline first so the colored mesh sits on top
+					const group = new THREE.Group();
+					group.add(outlineMesh);
+					group.add(mesh);
+					const labelOffsetY = node.kind === 'individual' ? baseRadius * 1.05 : baseRadius + 1.8;
+					const labelSprite = createNodeLabelSprite(
+						node.label,
+						isSelected ? '#082f49' : dataset.visual.nodeLabelColor,
+						isSelected ? 'rgba(248, 250, 252, 0.96)' : 'rgba(2, 6, 23, 0.84)',
+						isSelected ? '#38bdf8' : nodeColor,
+						Math.max(baseRadius * 4.6, 18),
+						Math.max(baseRadius * 1.05, 4.8),
+					);
+					labelSprite.position.set(0, labelOffsetY, 0);
+					group.add(labelSprite);
+					return group;
+				} catch {
+					// fallback to regular mesh if clone or outline fails
+				}
+			}
 			const labelOffsetY = node.kind === 'individual' ? baseRadius * 1.05 : baseRadius + 1.8;
 			const labelSprite = createNodeLabelSprite(
 				node.label,
@@ -933,7 +1037,7 @@ export default function GraphView() {
 			group.add(labelSprite);
 			return group;
 		},
-		[dataset.visual, recentlyRevealedNodeIds, selectedNodeId],
+		[dataset.visual, recentlyRevealedNodeIds, selectedNodeId, visitedNodeIds],
 	);
 
 	const handleReflow = useCallback(() => {
@@ -998,13 +1102,27 @@ export default function GraphView() {
 			const isHighlighted = highlightedNodeIds.has(typedNode.id);
 			const isRecentlyRevealed = recentlyRevealedNodeIds.has(typedNode.id);
 			const faded = traceMode && selectedNodeId && !isHighlighted;
+			const isSelected = selectedNodeId === typedNode.id;
+			const isVisited = visitedNodeIds.has(typedNode.id);
 			const baseColor = isHighlighted ? dataset.visual.neighborNodeColor : dataset.visual.nodeColors[typedNode.kind];
 			const isLeaf = (visibleNeighborCounts.get(typedNode.id) ?? 0) === 0;
-			const isSelectedOrLeaf = selectedNodeId === typedNode.id || isLeaf;
-			const fillColor =
+			const isSelectedOrLeaf = isSelected || isLeaf;
+			// Selection / visited styling: selected wins, then visited, then recently revealed, then base
+			let fillColor =
 				isSelectedOrLeaf ? dataset.visual.activeNodeColor
 				: isRecentlyRevealed ? dataset.visual.activeLinkColor
 				: baseColor;
+			if (isVisited && !isSelected) {
+				if (typedNode.kind === 'firm') {
+					fillColor = '#b45309';
+				} else if (typedNode.kind === 'individual') {
+					fillColor = '#1e40af';
+				}
+			}
+			if (isSelected) {
+				if (typedNode.kind === 'firm') fillColor = '#b45309';
+				else if (typedNode.kind === 'individual') fillColor = '#1e40af';
+			}
 
 			if (isRecentlyRevealed) {
 				ctx.beginPath();
@@ -1019,12 +1137,26 @@ export default function GraphView() {
 			ctx.fillStyle = fillColor;
 			ctx.fill();
 
-			ctx.lineWidth = typedNode.isHub || isSelectedOrLeaf ? 2.5 : 1.1;
-			ctx.strokeStyle = typedNode.isHub || isSelectedOrLeaf ? dataset.visual.hubRingColor : dataset.visual.nodeStrokeColor;
+			if (isSelected) {
+				ctx.lineWidth = 2.8;
+			} else if (isVisited) {
+				ctx.lineWidth = 2.2;
+			} else {
+				ctx.lineWidth = typedNode.isHub || isSelectedOrLeaf ? 2.8 : 1.1;
+			}
+			ctx.strokeStyle =
+				isSelected || (isVisited && !isSelected) ? 'black'
+				: typedNode.isHub || isSelectedOrLeaf ? dataset.visual.hubRingColor
+				: dataset.visual.nodeStrokeColor;
 			ctx.stroke();
 
 			const { fontSize, labelY, labelPadding } = getNodeLabelMetrics(typedNode, globalScale);
-			const showLabel = !isLargeGraph || selectedNodeId === typedNode.id || highlightedNodeIds.has(typedNode.id) || isLeaf || isRecentlyRevealed;
+			// Hide labels when zoomed far out (globalScale below threshold) to reduce clutter,
+			// but always show labels for selected or visited nodes so the user can follow their pressed nodes.
+			const forceShow = visitedNodeIds.has(typedNode.id) || selectedNodeId === typedNode.id;
+			const showLabel =
+				(forceShow || globalScale >= LABEL_MIN_SCALE_FOR_LABELS) &&
+				(!isLargeGraph || selectedNodeId === typedNode.id || highlightedNodeIds.has(typedNode.id) || isLeaf || isRecentlyRevealed);
 			if (showLabel) {
 				ctx.font = `${fontSize}px Inter, sans-serif`;
 				ctx.textAlign = 'center';
@@ -1045,7 +1177,7 @@ export default function GraphView() {
 
 			ctx.globalAlpha = 1;
 		},
-		[dataset.visual, highlightedNodeIds, isLargeGraph, recentlyRevealedNodeIds, selectedNodeId, traceMode, visibleNeighborCounts],
+		[dataset.visual, highlightedNodeIds, isLargeGraph, recentlyRevealedNodeIds, selectedNodeId, traceMode, visibleNeighborCounts, visitedNodeIds],
 	);
 
 	const renderNodePointerArea = useCallback(
@@ -1105,6 +1237,15 @@ export default function GraphView() {
 								className='rounded-xl bg-sky-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-300'
 								type='submit'>
 								Fetch Nodes
+							</button>
+							<button
+								className='rounded-xl bg-transparent px-3 py-2 text-sm font-medium text-slate-100/80 hover:text-white transition border border-white/10'
+								type='button'
+								onClick={() => {
+									setVisitedNodeIds(new Set());
+									appendLog('Cleared visited nodes.');
+								}}>
+								Clear visited
 							</button>
 							{statusMessage ?
 								<span className='text-sm text-slate-300'>{statusMessage}</span>

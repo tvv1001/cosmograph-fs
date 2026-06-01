@@ -471,6 +471,25 @@ export async function GET(request: Request) {
 	const visibleNodeIds = new Set<string>();
 
 	for (const match of matches.slice(0, 20)) {
+		// For firms, limit to direct individuals with 'employment' or 'control' relationship.
+		if (match.kind === 'firm') {
+			for (const link of links) {
+				const source = getEndpointId(link.source);
+				const target = getEndpointId(link.target);
+				if (source === match.id || target === match.id) {
+					const other = source === match.id ? target : source;
+					const otherNode = nodeById.get(other);
+					if (otherNode && otherNode.kind === 'individual' && (link.relationship === 'employment' || link.relationship === 'control')) {
+						visibleNodeIds.add(other);
+					}
+				}
+			}
+			// Always include the firm itself
+			visibleNodeIds.add(match.id);
+			continue;
+		}
+
+		// For individuals and other node kinds, include direct neighbors
 		for (const neighborId of getDirectNeighborSelection(adjacency, match.id)) {
 			visibleNodeIds.add(neighborId);
 		}

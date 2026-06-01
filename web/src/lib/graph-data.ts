@@ -131,18 +131,19 @@ export interface SearchRevealResult {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	chargeStrength: -142,
-	linkDistance: 146,
-	linkStrength: 0.16,
-	velocityDecay: 0.29,
-	alphaDecay: 0.048,
-	alphaMin: 0.004,
-	warmupTicks: 42,
-	cooldownTicks: 220,
-	collisionPadding: 15,
-	hubGravityStrength: 0.042,
-	neighborhoodSpread: 75,
-	focusZoom: 1.75,
+	// Spread nodes out further (~200%): increase repulsion and distances significantly
+	chargeStrength: -620,
+	linkDistance: 620,
+	linkStrength: 0.14,
+	velocityDecay: 0.28,
+	alphaDecay: 0.038,
+	alphaMin: 0.003,
+	warmupTicks: 52,
+	cooldownTicks: 360,
+	collisionPadding: 60,
+	hubGravityStrength: 0.038,
+	neighborhoodSpread: 320,
+	focusZoom: 2.1,
 	reheatOnSelect: true,
 };
 
@@ -157,7 +158,8 @@ const DEFAULT_VISUAL_CONFIG = {
 	neighborNodeColor: '#fde68a',
 	linkColor: 'rgba(148, 163, 184, 0.18)',
 	activeLinkColor: 'rgba(125, 211, 252, 0.96)',
-	cycleLinkColor: '#c084fc',
+	// cycle links use the same subdued color as regular links to avoid distracting purple highlights
+	cycleLinkColor: 'rgba(148, 163, 184, 0.18)',
 	linkParticleColor: '#e0f2fe',
 	linkWidth: 0.95,
 	activeLinkWidth: 2.1,
