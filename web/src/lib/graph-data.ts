@@ -33,6 +33,7 @@ export interface GraphNode {
 	degreeHint: number;
 	size: number;
 	isHub: boolean;
+	isActive?: boolean;
 	title: string;
 	identifierLine: string;
 	badges: EntityBadge[];
@@ -42,6 +43,11 @@ export interface GraphNode {
 	searchText: string;
 	externalLinks: EntityLink[];
 	detailSections: EntityDetailSection[];
+	individualId?: number;
+	firstName?: string;
+	middleName?: string;
+	lastName?: string;
+	otherNames?: string[];
 	x?: number;
 	y?: number;
 	vx?: number;
@@ -89,9 +95,11 @@ export interface GraphDataset {
 		neighborNodeColor: string;
 		linkColor: string;
 		activeLinkColor: string;
+		cycleLinkColor: string;
 		linkParticleColor: string;
 		linkWidth: number;
 		activeLinkWidth: number;
+		cycleLinkWidth: number;
 		nodeStrokeColor: string;
 		nodeLabelColor: string;
 		panelBackground: string;
@@ -136,17 +144,19 @@ const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
 const DEFAULT_VISUAL_CONFIG = {
 	backgroundColor: '#020617',
 	nodeColors: {
-		firm: '#38bdf8',
-		individual: '#22c55e',
+		firm: '#f59e0b',
+		individual: '#3b82f6',
 	} satisfies Record<GraphNodeKind, string>,
 	hubRingColor: '#e0f2fe',
 	activeNodeColor: '#f8fafc',
 	neighborNodeColor: '#fde68a',
 	linkColor: 'rgba(148, 163, 184, 0.18)',
 	activeLinkColor: 'rgba(125, 211, 252, 0.96)',
+	cycleLinkColor: '#c084fc',
 	linkParticleColor: '#e0f2fe',
 	linkWidth: 0.95,
 	activeLinkWidth: 2.1,
+	cycleLinkWidth: 2.8,
 	nodeStrokeColor: 'rgba(15, 23, 42, 0.92)',
 	nodeLabelColor: '#e2e8f0',
 	panelBackground: 'rgba(2, 6, 23, 0.88)',
@@ -201,7 +211,20 @@ type FirmSeed = {
 	details: EntityDetailSection[];
 	externalLinks?: EntityLink[];
 };
-type PersonSeed = { id: string; crd: string; name: string; summary: string; badges: EntityBadge[]; details: EntityDetailSection[]; externalLinks?: EntityLink[] };
+type PersonSeed = {
+	id: string;
+	crd: string;
+	name: string;
+	individualId?: number;
+	firstName?: string;
+	middleName?: string;
+	lastName?: string;
+	otherNames?: string[];
+	summary: string;
+	badges: EntityBadge[];
+	details: EntityDetailSection[];
+	externalLinks?: EntityLink[];
+};
 
 export function createGraphDataset(): GraphDataset {
 	const nodes: GraphNode[] = [];
@@ -263,7 +286,12 @@ export function createGraphDataset(): GraphDataset {
 		legend: [
 			{ label: 'Firm', color: DEFAULT_VISUAL_CONFIG.nodeColors.firm, description: 'Broker-dealers and related firms' },
 			{ label: 'Person', color: DEFAULT_VISUAL_CONFIG.nodeColors.individual, description: 'Registered people and officers' },
-			{ label: 'Highlighted path', color: DEFAULT_VISUAL_CONFIG.activeLinkColor, description: 'Active selection and nearby links' },
+			{ label: 'Selected node', color: DEFAULT_VISUAL_CONFIG.activeNodeColor, description: 'The current node or leaf nodes with no visible children' },
+			{ label: 'Closed loop', color: DEFAULT_VISUAL_CONFIG.cycleLinkColor, description: 'Links that complete a visible cycle between nodes' },
+			{ label: 'Current emp/reg', color: '#38bdf8', description: 'Active employment and registration relationships' },
+			{ label: 'Previous emp/reg', color: '#94a3b8', description: 'Prior employment and registration relationships' },
+			{ label: 'Controls (From BD, Red)', color: '#f87171', description: 'Control relationships derived from Form BD' },
+			{ label: 'Highlighted path', color: DEFAULT_VISUAL_CONFIG.activeLinkColor, description: 'Selected node and direct neighbors on the active path' },
 		],
 		initialNodeId: INITIAL_FIRM_ID,
 		initialVisibleNodeIds: [],
@@ -299,12 +327,12 @@ export function expandSelection(dataset: GraphDataset, nodeId: string): Set<stri
 	return visibleNodeIds;
 }
 
-export function revealSearchResults(dataset: GraphDataset, currentVisibleNodeIds: Set<string>, query: string): SearchRevealResult {
+export function revealSearchResults(dataset: GraphDataset, query: string): SearchRevealResult {
 	const normalizedQuery = query.trim().toLowerCase();
 	if (!normalizedQuery) {
 		return {
 			query: '',
-			visibleNodeIds: new Set(currentVisibleNodeIds),
+			visibleNodeIds: new Set<string>(),
 			matchedNodeIds: [],
 			primaryMatchId: null,
 			addedCount: 0,
@@ -312,22 +340,46 @@ export function revealSearchResults(dataset: GraphDataset, currentVisibleNodeIds
 		};
 	}
 
-	const matches = dataset.graphData.nodes
-		.filter((node) => node.searchText.includes(normalizedQuery))
+	const allMatches = dataset.graphData.nodes
+		.filter((node) => isSearchMatch(node, normalizedQuery))
 		.sort((left, right) => scoreSearchMatch(left.searchText, normalizedQuery) - scoreSearchMatch(right.searchText, normalizedQuery));
 
-	const nextVisible = new Set(currentVisibleNodeIds);
-	for (const match of matches) for (const nodeId of expandSelection(dataset, match.id)) nextVisible.add(nodeId);
+	const firmMatches = allMatches.filter((node) => node.kind === 'firm');
+	const matches = firmMatches.length > 0 ? firmMatches : allMatches;
 
-	const addedCount = nextVisible.size - currentVisibleNodeIds.size;
+	const nextVisible = new Set<string>();
+	for (const match of matches) {
+		for (const nodeId of expandSelection(dataset, match.id)) {
+			nextVisible.add(nodeId);
+		}
+	}
+
+	const visibleCount = nextVisible.size;
 	return {
 		query: normalizedQuery,
 		visibleNodeIds: nextVisible,
 		matchedNodeIds: matches.map((node) => node.id),
 		primaryMatchId: matches[0]?.id ?? null,
-		addedCount,
-		message: matches.length === 0 ? `No local matches found for "${normalizedQuery}".` : `Added ${addedCount} nodes for "${normalizedQuery}".`,
+		addedCount: visibleCount,
+		message: matches.length === 0 ? `No matches found for "${normalizedQuery}".` : `Found ${visibleCount} nodes for "${normalizedQuery}".`,
 	};
+}
+
+function isSearchMatch(node: GraphNode, normalizedQuery: string): boolean {
+	if (node.searchText.includes(normalizedQuery)) {
+		return true;
+	}
+
+	if (normalizedQuery.length < 2) {
+		return false;
+	}
+
+	const queryTokens = normalizedQuery.split(/\s+/).filter(Boolean);
+	const searchTokens = node.searchText.split(/[^a-z0-9]+/).filter(Boolean);
+
+	const threshold = Math.max(1, Math.floor(normalizedQuery.length * 0.25));
+
+	return queryTokens.every((queryToken) => searchTokens.some((searchToken) => searchToken.includes(queryToken) || getLevenshteinDistance(searchToken, queryToken) <= threshold));
 }
 
 export function getDisplayedStats(graphData: { nodes: GraphNode[]; links: GraphLink[] }): { people: number; firms: number; links: number } {
@@ -342,7 +394,19 @@ export function getKindLabel(kind: GraphNodeKind): string {
 	return kind === 'firm' ? 'FIRM' : 'INDIVIDUAL';
 }
 
+export function isNodeInactive(node: GraphNode): boolean {
+	if (typeof node.isActive === 'boolean') {
+		return !node.isActive;
+	}
+
+	const labels = node.badges.map((badge) => badge.label.toLowerCase());
+	return labels.some((label) => label.includes('inactive') || label.includes('terminated'));
+}
+
 function createFirmNode(seed: FirmSeed): GraphNode {
+	const statusLabels = seed.badges.map((badge) => badge.label.toLowerCase());
+	const isActive = !statusLabels.some((label) => label.includes('inactive') || label.includes('terminated'));
+
 	return {
 		id: seed.id,
 		label: seed.name,
@@ -350,6 +414,7 @@ function createFirmNode(seed: FirmSeed): GraphNode {
 		degreeHint: 0,
 		size: 10,
 		isHub: true,
+		isActive,
 		title: seed.name,
 		identifierLine: `CRD#: ${seed.crd} / SEC#: ${seed.sec}`,
 		badges: seed.badges,
@@ -366,6 +431,10 @@ function createFirmNode(seed: FirmSeed): GraphNode {
 }
 
 function createPersonNode(seed: PersonSeed): GraphNode {
+	const statusLabels = seed.badges.map((badge) => badge.label.toLowerCase());
+	const isActive = !statusLabels.some((label) => label.includes('inactive') || label.includes('terminated'));
+	const nameTokens = [seed.name, seed.firstName, seed.middleName, seed.lastName, ...(seed.otherNames ?? [])].filter(Boolean).join(' ');
+
 	return {
 		id: seed.id,
 		label: seed.name,
@@ -373,12 +442,18 @@ function createPersonNode(seed: PersonSeed): GraphNode {
 		degreeHint: 0,
 		size: 5,
 		isHub: false,
+		isActive,
 		title: seed.name,
-		identifierLine: `CRD#: ${seed.crd}`,
+		identifierLine: `CRD#: ${seed.crd}${seed.individualId ? ` · ID#: ${seed.individualId}` : ''}`,
 		badges: seed.badges,
 		marker: 'I',
 		summary: seed.summary,
-		searchText: `${seed.name} ${seed.crd}`.toLowerCase(),
+		individualId: seed.individualId,
+		firstName: seed.firstName,
+		middleName: seed.middleName,
+		lastName: seed.lastName,
+		otherNames: seed.otherNames,
+		searchText: `${nameTokens} ${seed.crd} ${seed.individualId ?? ''}`.toLowerCase(),
 		externalLinks: seed.externalLinks ?? [{ label: 'BrokerCheck Profile', href: `https://brokercheck.finra.org/individual/summary/${seed.crd}` }],
 		detailSections: seed.details,
 	};
@@ -987,7 +1062,7 @@ function getSeedPeople(): PersonSeed[] {
 	];
 }
 
-function createAdjacencyMap(links: GraphLink[]): Map<string, Set<string>> {
+export function createAdjacencyMap(links: GraphLink[]): Map<string, Set<string>> {
 	const adjacency = new Map<string, Set<string>>();
 	for (const link of links) {
 		const source = getEndpointId(link.source);
@@ -1000,7 +1075,7 @@ function createAdjacencyMap(links: GraphLink[]): Map<string, Set<string>> {
 	return adjacency;
 }
 
-function createLinksByNodeId(links: GraphLink[]): Map<string, GraphLink[]> {
+export function createLinksByNodeId(links: GraphLink[]): Map<string, GraphLink[]> {
 	const linksByNodeId = new Map<string, GraphLink[]>();
 	for (const link of links) {
 		const source = getEndpointId(link.source);
@@ -1034,14 +1109,48 @@ function connectEmployment(links: GraphLink[], linkKeys: Set<string>, degreeCoun
 }
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): number {
-	if (isHub) return Math.min(17.5, 8 + Math.log2(degreeHint + 1) * 1.55);
-	if (kind === 'individual') return Math.min(7.4, 3.2 + Math.log2(degreeHint + 1) * 0.82);
-	return 4;
+	const connectionCount = Math.max(0, degreeHint);
+	const degreeScale = Math.pow(connectionCount, 0.68) * 2.35;
+
+	if (kind === 'firm') {
+		return Math.min(54, (13 + degreeScale + (isHub ? 3 : 0)) * 1.5);
+	}
+
+	return Math.min(36, (7 + degreeScale + (isHub ? 1.5 : 0)) * 1.5);
 }
 
 function scoreSearchMatch(haystack: string, needle: string): number {
 	const index = haystack.indexOf(needle);
-	return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+	if (index !== -1) {
+		return index;
+	}
+
+	const bestDistance = haystack.split(/\s+/).reduce((best, token) => Math.min(best, getLevenshteinDistance(token, needle)), Number.MAX_SAFE_INTEGER);
+	return bestDistance === Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : 1000 + bestDistance;
+}
+
+function getLevenshteinDistance(left: string, right: string): number {
+	const matrix: number[][] = [];
+
+	for (let i = 0; i <= left.length; i += 1) {
+		matrix[i] = [i];
+	}
+
+	for (let j = 0; j <= right.length; j += 1) {
+		matrix[0][j] = j;
+	}
+
+	for (let i = 1; i <= left.length; i += 1) {
+		for (let j = 1; j <= right.length; j += 1) {
+			if (left[i - 1] === right[j - 1]) {
+				matrix[i][j] = matrix[i - 1][j - 1];
+			} else {
+				matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + 1);
+			}
+		}
+	}
+
+	return matrix[left.length][right.length];
 }
 
 export function getEndpointId(endpoint: string | GraphNode): string {
