@@ -42,3 +42,4 @@ wasm-sim/target/
 
 # Generated WASM artifacts if reintroduced
 web/public/wasm/*.wasm
+data/

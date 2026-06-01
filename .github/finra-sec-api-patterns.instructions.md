@@ -44,6 +44,8 @@ Recommended structure:
 - `web/data/finra/upstream-cache/<SOURCE>/<TYPE>_<ID>.json`
   - optional raw upstream payload snapshots for refresh/debug workflows only
 
+When both FINRA and SEC details exist for the same CRD, the canonical record should be merged into a single entity node by CRD. This means the final local entity file should preserve separate raw `finra` and `sec` payloads while also exposing one normalized `merged` view for the entity, even though individual and firm CRDs are upstream-typed separately.
+
 Canonical local records should be normalized enough to support:
 
 - entity lookup by CRD/source ID
