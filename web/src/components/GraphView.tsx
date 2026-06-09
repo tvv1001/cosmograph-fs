@@ -88,9 +88,32 @@ export default function GraphView() {
 	useEffect(() => {
 		if (graphRef.current) {
 			const fg = graphRef.current;
-			fg.d3Force('charge')?.strength(-150); 
-			fg.d3Force('link')?.distance(60);
-			fg.d3Force('center')?.strength(0.05);
+			// Massive repulsion for firms to space them evenly throughout the 3D volume
+			fg.d3Force('charge')?.strength((node: any) => {
+				return node.kind === 'firm' ? -5000 : -300;
+			}); 
+
+			// Tight orbital clustering for people around their firms
+			fg.d3Force('link')?.distance((l: any) => {
+				const source = l.source as any;
+				const target = l.target as any;
+				if (source.kind === 'firm' || target.kind === 'firm') return 15;
+				return 200;
+			}).strength((l: any) => {
+				const source = l.source as any;
+				const target = l.target as any;
+				if (source.kind === 'firm' || target.kind === 'firm') return 1.2;
+				return 0.05;
+			});
+
+			// Prevent entire orbits from clumping by adding a large-radius collision force for firms
+			fg.d3Force('collide', (d3 as any).forceCollide().radius((node: any) => {
+				return node.kind === 'firm' ? 120 : 5;
+			}));
+
+			fg.d3Force('center')?.strength(0.01);
+			// Remove the radial force to allow 3D volume filling
+			fg.d3Force('radial', null);
 		}
 	}, [ForceGraph3D]);
 
@@ -125,9 +148,9 @@ export default function GraphView() {
 	}, []);
 
 	const loadInitialNodes = useCallback(async () => {
-		setStatusMessage(`Loading entire graph...`);
+		setStatusMessage(`Loading top firms galaxy...`);
 		try {
-			const response = await fetch(`/api/graph/search?all=true`);
+			const response = await fetch(`/api/graph/search?topFirms=50`);
 			if (!response.ok) throw new Error(`Initial load failed`);
 			const result = await response.json();
 			mergeGraphData({ nodes: result.visibleNodes, links: result.visibleLinks });
@@ -185,7 +208,7 @@ export default function GraphView() {
 	}, [visibleNodeIds, selectedNodeId, visitedNodeIds]);
 
 	const handleNodeClick = useCallback(
-		(node: GraphNode | undefined) => {
+		async (node: GraphNode | undefined) => {
 			if (!node) return;
 			const typedNode = node;
 			setRecentlyRevealedNodeIds(new Set());
@@ -193,6 +216,24 @@ export default function GraphView() {
 			setVisitedNodeIds((prev) => new Set(prev).add(typedNode.id));
 			setMenuOpen(true);
 			setShowInfo(true);
+
+			// Dynamic Fetching: Load full network if missing
+			const neighbors = dataset.adjacency.get(typedNode.id) || new Set();
+			if (neighbors.size < (typedNode.connectionCount || 0)) {
+				setStatusMessage(`Fetching missing nodes for ${typedNode.title}...`);
+				try {
+					const response = await fetch(`/api/graph/search?q=${encodeURIComponent(typedNode.id)}`);
+					if (response.ok) {
+						const result = await response.json();
+						mergeGraphData({ nodes: result.visibleNodes, links: result.visibleLinks });
+						setVisibleNodeIds(prev => {
+							const next = new Set(prev);
+							result.visibleNodeIds.forEach((id: string) => next.add(id));
+							return next;
+						});
+					}
+				} catch (e) {}
+			}
 
 			// 3-hop expansion for individuals, direct for firms
 			if (typedNode.kind === 'individual') {
@@ -228,7 +269,7 @@ export default function GraphView() {
 				});
 			}
 		},
-		[dataset],
+		[dataset, mergeGraphData],
 	);
 
 	const handleBackgroundClick = useCallback(() => {
@@ -296,8 +337,9 @@ export default function GraphView() {
 	}, []);
 
 	const handleLoadAllNodes = useCallback(async () => {
+		setStatusMessage('Loading top 50 firms and their networks...');
 		try {
-			const response = await fetch('/api/graph/search?count=5000');
+			const response = await fetch('/api/graph/search?topFirms=50');
 			const result = await response.json();
 			mergeGraphData({ nodes: result.visibleNodes, links: result.visibleLinks });
 			setVisibleNodeIds(new Set(result.visibleNodeIds));
@@ -430,18 +472,51 @@ export default function GraphView() {
 								if (isVisited) return node.kind === 'firm' ? '#b45309' : '#1e40af';
 								return (dataset.visual.nodeColors as any)[node.kind] || '#fff';
 							}}
+							nodeThreeObject={(node: any) => {
+								const size = node.size || 5;
+								const isInactive = isNodeInactive(node);
+								// Firms = Squares (Cubes in 3D), People = Circles (Spheres in 3D)
+								const geometry = node.kind === 'firm' 
+									? new THREE.BoxGeometry(size * 1.4, size * 1.4, size * 1.4) 
+									: new THREE.SphereGeometry(size);
+								
+								const isSelected = selectedNodeId === node.id;
+								const isRecently = recentlyRevealedNodeIds.has(node.id);
+								const isHighlighted = highlightedNodeIds.has(node.id);
+								const isVisited = visitedNodeIds.has(node.id);
+								
+								let color = (dataset.visual.nodeColors as any)[node.kind] || '#fff';
+								if (isSelected) color = dataset.visual.activeNodeColor;
+								else if (isRecently) color = dataset.visual.activeLinkColor;
+								else if (isHighlighted) color = dataset.visual.neighborNodeColor;
+								else if (isVisited) color = node.kind === 'firm' ? '#b45309' : '#1e40af';
+
+								const material = new THREE.MeshLambertMaterial({
+									color: color,
+									transparent: true,
+									opacity: isInactive ? 0.3 : 0.95
+								});
+
+								// Flag disclosures with a red emissive glow
+								if (node.hasDisclosure) {
+									material.emissive = new THREE.Color('#ff0000');
+									material.emissiveIntensity = 0.6;
+								}
+
+								return new THREE.Mesh(geometry, material);
+							}}
 							nodeLabel="label"
-							linkWidth={(link: any) => highlightedLinkIds.has(getLinkKey(link)) ? 2.0 : 0.6}
+							linkWidth={(link: any) => highlightedLinkIds.has(getLinkKey(link)) ? 3.0 : 1.5}
 							linkColor={(link: any) => {
-								if (highlightedLinkIds.has(getLinkKey(link))) return 'rgba(0, 0, 0, 0.6)';
+								if (highlightedLinkIds.has(getLinkKey(link))) return 'rgba(255, 255, 255, 0.95)';
 								switch (link.relationship) {
-									case 'employment': return 'rgba(41, 182, 246, 0.25)';
-									case 'disclosure': return 'rgba(148, 163, 184, 0.2)';
-									case 'control': return 'rgba(255, 112, 67, 0.3)';
-									default: return 'rgba(0, 0, 0, 0.12)';
+									case 'employment': return 'rgba(3, 169, 244, 0.8)'; // Blue
+									case 'disclosure': return 'rgba(255, 255, 255, 0.4)'; // Gray/White
+									case 'control': return 'rgba(244, 67, 54, 0.9)'; // Red
+									default: return 'rgba(255, 255, 255, 0.4)';
 								}
 							}}
-							linkDirectionalArrowLength={(link: any) => link.relationship === 'control' ? 6 : 0}
+							linkDirectionalArrowLength={(link: any) => link.relationship === 'control' ? 10 : 0}
 							linkDirectionalArrowRelPos={1}
 							onNodeClick={handleNodeClick}
 							onNodeHover={(node: any) => setHoveredNodeId(node?.id || null)}
@@ -450,7 +525,7 @@ export default function GraphView() {
 							onNodeDrag={onNodeDrag}
 							onNodeDragEnd={onNodeDragEnd}
 							enableNodeDrag={true}
-							d3AlphaDecay={0.01}
+							d3AlphaDecay={0.02}
 							d3VelocityDecay={0.3}
 						/>
 					)}

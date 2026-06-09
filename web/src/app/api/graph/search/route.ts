@@ -62,11 +62,16 @@ function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = get
 	const active = String(data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope ?? '').toLowerCase() === 'active';
 	const summary = data.basicInformation?.firmName ? `Firm profile for ${name}` : 'Firm profile loaded from raw data.';
 
+	// Pre-determine disclosure status
+	const hasDisclosure = (data.disclosureDetails?.length > 0) || (data.disclosures?.length > 0);
+
 	return {
 		id,
 		label: name,
 		kind: 'firm',
 		degreeHint: 0,
+		connectionCount: 0,
+		hasDisclosure,
 		size: 10,
 		isHub: true,
 		isActive: active,
@@ -104,11 +109,16 @@ function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = g
 	const summary = `Individual profile for ${name}`;
 	const id = getCanonicalNodeId(namespace, 'individual', fallbackId || crd);
 
+	// Pre-determine disclosure status
+	const hasDisclosure = (data.disclosureDetails?.length > 0) || (data.disclosures?.length > 0);
+
 	return {
 		id,
 		label: name,
 		kind: 'individual',
 		degreeHint: 0,
+		connectionCount: 0,
+		hasDisclosure,
 		size: 5,
 		isHub: false,
 		isActive: active,
@@ -175,6 +185,8 @@ function buildRawGraph() {
 						label: String(employment.firmName ?? `Firm ${firmId}`),
 						kind: 'firm',
 						degreeHint: 0,
+						connectionCount: 0,
+						hasDisclosure: false,
 						size: 10,
 						isHub: true,
 						isActive: String(employment.firmBCScope ?? '').toLowerCase() === 'active',
@@ -219,6 +231,8 @@ function buildRawGraph() {
 						label: String(employment.firmName ?? `Firm ${firmId}`),
 						kind: 'firm',
 						degreeHint: 0,
+						connectionCount: 0,
+						hasDisclosure: false,
 						size: 10,
 						isHub: true,
 						isActive: String(employment.firmBCScope ?? '').toLowerCase() === 'active',
@@ -268,8 +282,10 @@ function buildRawGraph() {
 	}
 
 	for (const node of allNodes) {
-		node.degreeHint = degreeCounts.get(node.id) ?? 0;
-		node.size = getNodeSize(node.degreeHint, node.isHub, node.kind);
+		const count = degreeCounts.get(node.id) ?? 0;
+		node.degreeHint = count;
+		node.connectionCount = count;
+		node.size = getNodeSize(count, node.isHub, node.kind);
 	}
 
 	return { nodes: allNodes, links, adjacency, nodeById: nodesById };
@@ -381,6 +397,7 @@ export async function GET(request: Request) {
 	const url = new URL(request.url);
 	const query = normalizeText(url.searchParams.get('q') ?? '');
 	const loadAll = url.searchParams.get('all') === 'true';
+	const topFirmsParam = url.searchParams.get('topFirms');
 	const startupMode = url.searchParams.get('startup');
 	const countParam = url.searchParams.get('count');
 	const peopleParam = url.searchParams.get('people');
@@ -388,9 +405,38 @@ export async function GET(request: Request) {
 	const requestedCount = Number(countParam);
 	const requestedPeople = Number(peopleParam);
 	const requestedFirms = Number(firmsParam);
+	const requestedTopFirms = Number(topFirmsParam);
+	const hasTopFirmsRequest = Number.isFinite(requestedTopFirms) && requestedTopFirms > 0;
 	const hasCountRequest = Number.isFinite(requestedCount) && requestedCount > 0;
 	const hasPeopleAndFirmRequest = Number.isFinite(requestedPeople) && requestedPeople > 0 && Number.isFinite(requestedFirms) && requestedFirms > 0;
 	const { nodes, links, adjacency, nodeById } = getGraphData();
+
+	if (hasTopFirmsRequest && !query) {
+		const allFirms = nodes.filter((node) => node.kind === 'firm').sort(compareNodesBySize);
+		const selectedFirms = allFirms.slice(0, requestedTopFirms);
+		const visibleNodeIds = new Set<string>();
+
+		for (const firm of selectedFirms) {
+			visibleNodeIds.add(firm.id);
+			const neighbors = adjacency.get(firm.id) ?? new Set();
+			for (const neighborId of neighbors) {
+				visibleNodeIds.add(neighborId);
+			}
+		}
+
+		const visibleNodes = Array.from(visibleNodeIds).map(id => nodeById.get(id)).filter(Boolean) as GraphNode[];
+		const visibleLinks = links.filter((link) => visibleNodeIds.has(getEndpointId(link.source)) && visibleNodeIds.has(getEndpointId(link.target)));
+
+		return NextResponse.json({
+			query: '',
+			visibleNodeIds: Array.from(visibleNodeIds),
+			visibleNodes,
+			visibleLinks,
+			matchedNodeIds: selectedFirms.map(f => f.id),
+			primaryMatchId: selectedFirms[0]?.id ?? null,
+			message: `Loaded top ${selectedFirms.length} firms and all of their connections (${visibleNodes.length} nodes total).`,
+		});
+	}
 
 	if (loadAll) {
 		const visibleNodeIds = new Set(nodes.map((node) => node.id));

@@ -55,11 +55,16 @@ function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = get
 	const active = String(data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope ?? '').toLowerCase() === 'active';
 	const summary = data.basicInformation?.firmName ? `Firm profile for ${name}` : 'Firm profile loaded from raw data.';
 
+	// Pre-determine disclosure status
+	const hasDisclosure = (data.disclosureDetails?.length > 0) || (data.disclosures?.length > 0);
+
 	return {
 		id,
 		label: name,
 		kind: 'firm',
 		degreeHint: 0,
+		connectionCount: 0,
+		hasDisclosure,
 		size: 10,
 		isHub: true,
 		isActive: active,
@@ -72,7 +77,7 @@ function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = get
 		searchText: normalizeText(`${id} ${name} ${crd} ${sec} ${data.basicInformation?.firmBCScope ?? ''}`),
 		externalLinks: [],
 		detailSections: [],
-	} as GraphNode;
+	};
 }
 
 function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
@@ -89,11 +94,16 @@ function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = g
 	const summary = `Individual profile for ${name}`;
 	const id = getCanonicalNodeId(namespace, 'individual', fallbackId || crd);
 
+	// Pre-determine disclosure status
+	const hasDisclosure = (data.disclosureDetails?.length > 0) || (data.disclosures?.length > 0);
+
 	return {
 		id,
 		label: name,
 		kind: 'individual',
 		degreeHint: 0,
+		connectionCount: 0,
+		hasDisclosure,
 		size: 5,
 		isHub: false,
 		isActive: active,
@@ -111,7 +121,7 @@ function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = g
 		searchText: normalizeText(`${id} ${name} ${otherNames.join(' ')} ${crd} ${individualId}`),
 		externalLinks: individualId ? [{ label: 'BrokerCheck Profile', href: `https://brokercheck.finra.org/individual/summary/${individualId}` }] : [],
 		detailSections: [],
-	} as GraphNode;
+	};
 }
 
 function buildRawGraph() {
@@ -188,8 +198,10 @@ function buildRawGraph() {
 	}
 
 	for (const node of allNodes) {
-		node.degreeHint = degreeCounts.get(node.id) ?? 0;
-		node.size = getNodeSize(node.degreeHint, node.isHub, node.kind);
+		const count = degreeCounts.get(node.id) ?? 0;
+		node.degreeHint = count;
+		node.connectionCount = count;
+		node.size = getNodeSize(count, node.isHub, node.kind);
 	}
 
 	return { nodes: allNodes, links, adjacency, nodeById: nodesById };

@@ -31,6 +31,8 @@ export interface GraphNode {
 	label: string;
 	kind: GraphNodeKind;
 	degreeHint: number;
+	connectionCount: number;
+	hasDisclosure: boolean;
 	size: number;
 	isHub: boolean;
 	isActive?: boolean;
@@ -148,25 +150,25 @@ const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
 };
 
 const DEFAULT_VISUAL_CONFIG = {
-	backgroundColor: '#ffffff',
+	backgroundColor: '#000000',
 	nodeColors: {
-		firm: '#ff7043', // Vibrant Coral
-		individual: '#29b6f6', // Vibrant Sky Blue
+		firm: '#ff9800', // Vibrant Orange
+		individual: '#03a9f4', // Vibrant Light Blue
 	} satisfies Record<GraphNodeKind, string>,
-	hubRingColor: '#607d8b',
-	activeNodeColor: '#000000',
-	neighborNodeColor: '#ffca28',
-	linkColor: 'rgba(0, 0, 0, 0.12)', // Visible grey links
-	activeLinkColor: 'rgba(0, 0, 0, 0.6)',
-	cycleLinkColor: 'rgba(0, 0, 0, 0.1)',
-	linkParticleColor: '#607d8b',
-	linkWidth: 0.5,
-	activeLinkWidth: 1.2,
-	cycleLinkWidth: 1.2,
-	nodeStrokeColor: 'rgba(255, 255, 255, 0.8)',
-	nodeLabelColor: '#333333',
-	panelBackground: 'rgba(255, 255, 255, 0.95)',
-	panelBorder: 'rgba(0, 0, 0, 0.1)',
+	hubRingColor: '#ffffff',
+	activeNodeColor: '#ffffff',
+	neighborNodeColor: '#ffff00',
+	linkColor: 'rgba(255, 255, 255, 0.1)', // Very faint mesh lines
+	activeLinkColor: 'rgba(255, 255, 255, 0.9)',
+	cycleLinkColor: 'rgba(255, 255, 255, 0.1)',
+	linkParticleColor: '#ffffff',
+	linkWidth: 0.2, // Ultra-thin
+	activeLinkWidth: 1.0,
+	cycleLinkWidth: 0.2,
+	nodeStrokeColor: 'rgba(0, 0, 0, 0.5)',
+	nodeLabelColor: '#ffffff',
+	panelBackground: 'rgba(0, 0, 0, 0.95)',
+	panelBorder: 'rgba(255, 255, 255, 0.1)',
 };
 
 const DEFAULT_VIEWPORT_CONFIG = {
@@ -412,12 +414,15 @@ export function isNodeInactive(node: GraphNode): boolean {
 function createFirmNode(seed: FirmSeed): GraphNode {
 	const statusLabels = seed.badges.map((badge) => badge.label.toLowerCase());
 	const isActive = !statusLabels.some((label) => label.includes('inactive') || label.includes('terminated'));
+	const hasDisclosure = statusLabels.some((label) => label.includes('disclosure') && !label.includes('disclosures 0'));
 
 	return {
 		id: seed.id,
 		label: seed.name,
 		kind: 'firm',
 		degreeHint: 0,
+		connectionCount: 0,
+		hasDisclosure,
 		size: 10,
 		isHub: true,
 		isActive,
@@ -439,6 +444,7 @@ function createFirmNode(seed: FirmSeed): GraphNode {
 function createPersonNode(seed: PersonSeed): GraphNode {
 	const statusLabels = seed.badges.map((badge) => badge.label.toLowerCase());
 	const isActive = !statusLabels.some((label) => label.includes('inactive') || label.includes('terminated'));
+	const hasDisclosure = statusLabels.some((label) => label.includes('disclosure') && !label.includes('disclosures 0'));
 	const nameTokens = [seed.name, seed.firstName, seed.middleName, seed.lastName, ...(seed.otherNames ?? [])].filter(Boolean).join(' ');
 
 	return {
@@ -446,6 +452,8 @@ function createPersonNode(seed: PersonSeed): GraphNode {
 		label: seed.name,
 		kind: 'individual',
 		degreeHint: 0,
+		connectionCount: 0,
+		hasDisclosure,
 		size: 5,
 		isHub: false,
 		isActive,
