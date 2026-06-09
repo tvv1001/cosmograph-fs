@@ -42,13 +42,14 @@ function getCanonicalNodeId(namespace: string, type: 'individual' | 'firm', fall
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNode['kind']): number {
 	const connectionCount = Math.max(0, degreeHint);
-	const degreeScale = Math.pow(connectionCount, 0.68) * 2.35;
+	// Increase exponent and base multiplier for more dramatic scaling
+	const degreeScale = Math.pow(connectionCount, 0.75) * 4;
 
 	if (kind === 'firm') {
-		return Math.min(54, (13 + degreeScale + (isHub ? 3 : 0)) * 1.5);
+		return Math.min(80, (15 + degreeScale + (isHub ? 5 : 0)) * 1.2);
 	}
 
-	return Math.min(36, (7 + degreeScale + (isHub ? 1.5 : 0)) * 1.5);
+	return Math.min(60, (10 + degreeScale + (isHub ? 2 : 0)) * 1.2);
 }
 
 function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {

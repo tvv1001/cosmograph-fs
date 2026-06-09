@@ -131,43 +131,42 @@ export interface SearchRevealResult {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	// Spread nodes out further (~200%): increase repulsion and distances significantly
-	chargeStrength: -620,
-	linkDistance: 620,
-	linkStrength: 0.14,
-	velocityDecay: 0.28,
-	alphaDecay: 0.038,
-	alphaMin: 0.003,
-	warmupTicks: 52,
-	cooldownTicks: 360,
-	collisionPadding: 60,
-	hubGravityStrength: 0.038,
-	neighborhoodSpread: 320,
-	focusZoom: 2.1,
+	// Spread nodes out further (~220% of original reference)
+	chargeStrength: -1500,
+	linkDistance: 800,
+	linkStrength: 0.12,
+	velocityDecay: 0.4,
+	alphaDecay: 0.0228,
+	alphaMin: 0.001,
+	warmupTicks: 100,
+	cooldownTicks: 400,
+	collisionPadding: 45,
+	hubGravityStrength: 0.02,
+	neighborhoodSpread: 450,
+	focusZoom: 2.5,
 	reheatOnSelect: true,
 };
 
 const DEFAULT_VISUAL_CONFIG = {
-	backgroundColor: '#020617',
+	backgroundColor: '#ffffff',
 	nodeColors: {
-		firm: '#f59e0b',
-		individual: '#3b82f6',
+		firm: '#ff7043', // Vibrant Coral
+		individual: '#29b6f6', // Vibrant Sky Blue
 	} satisfies Record<GraphNodeKind, string>,
-	hubRingColor: '#e0f2fe',
-	activeNodeColor: '#f8fafc',
-	neighborNodeColor: '#fde68a',
-	linkColor: 'rgba(148, 163, 184, 0.18)',
-	activeLinkColor: 'rgba(125, 211, 252, 0.96)',
-	// cycle links use the same subdued color as regular links to avoid distracting purple highlights
-	cycleLinkColor: 'rgba(148, 163, 184, 0.18)',
-	linkParticleColor: '#e0f2fe',
-	linkWidth: 0.95,
-	activeLinkWidth: 2.1,
-	cycleLinkWidth: 2.8,
-	nodeStrokeColor: 'rgba(15, 23, 42, 0.92)',
-	nodeLabelColor: '#e2e8f0',
-	panelBackground: 'rgba(2, 6, 23, 0.88)',
-	panelBorder: 'rgba(148, 163, 184, 0.12)',
+	hubRingColor: '#607d8b',
+	activeNodeColor: '#000000',
+	neighborNodeColor: '#ffca28',
+	linkColor: 'rgba(0, 0, 0, 0.12)', // Visible grey links
+	activeLinkColor: 'rgba(0, 0, 0, 0.6)',
+	cycleLinkColor: 'rgba(0, 0, 0, 0.1)',
+	linkParticleColor: '#607d8b',
+	linkWidth: 0.5,
+	activeLinkWidth: 1.2,
+	cycleLinkWidth: 1.2,
+	nodeStrokeColor: 'rgba(255, 255, 255, 0.8)',
+	nodeLabelColor: '#333333',
+	panelBackground: 'rgba(255, 255, 255, 0.95)',
+	panelBorder: 'rgba(0, 0, 0, 0.1)',
 };
 
 const DEFAULT_VIEWPORT_CONFIG = {
@@ -1117,13 +1116,14 @@ function connectEmployment(links: GraphLink[], linkKeys: Set<string>, degreeCoun
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): number {
 	const connectionCount = Math.max(0, degreeHint);
-	const degreeScale = Math.pow(connectionCount, 0.68) * 2.35;
+	// Increase exponent and base multiplier for more dramatic scaling
+	const degreeScale = Math.pow(connectionCount, 0.75) * 4;
 
 	if (kind === 'firm') {
-		return Math.min(54, (13 + degreeScale + (isHub ? 3 : 0)) * 1.5);
+		return Math.min(80, (15 + degreeScale + (isHub ? 5 : 0)) * 1.2);
 	}
 
-	return Math.min(36, (7 + degreeScale + (isHub ? 1.5 : 0)) * 1.5);
+	return Math.min(60, (10 + degreeScale + (isHub ? 2 : 0)) * 1.2);
 }
 
 function scoreSearchMatch(haystack: string, needle: string): number {
