@@ -431,17 +431,17 @@ export default function GraphView() {
 								return (dataset.visual.nodeColors as any)[node.kind] || '#fff';
 							}}
 							nodeLabel="label"
-							linkWidth={(link: any) => highlightedLinkIds.has(getLinkKey(link)) ? 2.0 : 0.6}
+							linkWidth={(link: any) => highlightedLinkIds.has(getLinkKey(link)) ? 2.5 : 1.0}
 							linkColor={(link: any) => {
-								if (highlightedLinkIds.has(getLinkKey(link))) return 'rgba(0, 0, 0, 0.6)';
+								if (highlightedLinkIds.has(getLinkKey(link))) return 'rgba(255, 255, 255, 0.9)';
 								switch (link.relationship) {
-									case 'employment': return 'rgba(41, 182, 246, 0.25)';
-									case 'disclosure': return 'rgba(148, 163, 184, 0.2)';
-									case 'control': return 'rgba(255, 112, 67, 0.3)';
-									default: return 'rgba(0, 0, 0, 0.12)';
+									case 'employment': return 'rgba(0, 210, 255, 0.85)'; // Brighter Neon Blue
+									case 'disclosure': return 'rgba(255, 255, 255, 0.35)'; // Faint Gray
+									case 'control': return '#f44336'; // Vivid Red
+									default: return 'rgba(255, 255, 255, 0.2)';
 								}
 							}}
-							linkDirectionalArrowLength={(link: any) => link.relationship === 'control' ? 6 : 0}
+							linkDirectionalArrowLength={(link: any) => link.relationship === 'control' ? 8 : 0}
 							linkDirectionalArrowRelPos={1}
 							onNodeClick={handleNodeClick}
 							onNodeHover={(node: any) => setHoveredNodeId(node?.id || null)}

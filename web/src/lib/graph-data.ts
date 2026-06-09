@@ -148,25 +148,25 @@ const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
 };
 
 const DEFAULT_VISUAL_CONFIG = {
-	backgroundColor: '#ffffff',
+	backgroundColor: '#000000',
 	nodeColors: {
-		firm: '#ff7043', // Vibrant Coral
-		individual: '#29b6f6', // Vibrant Sky Blue
+		firm: '#ff9800', // Vibrant Orange
+		individual: '#03a9f4', // Vibrant Light Blue
 	} satisfies Record<GraphNodeKind, string>,
-	hubRingColor: '#607d8b',
-	activeNodeColor: '#000000',
-	neighborNodeColor: '#ffca28',
-	linkColor: 'rgba(0, 0, 0, 0.12)', // Visible grey links
-	activeLinkColor: 'rgba(0, 0, 0, 0.6)',
-	cycleLinkColor: 'rgba(0, 0, 0, 0.1)',
-	linkParticleColor: '#607d8b',
-	linkWidth: 0.5,
-	activeLinkWidth: 1.2,
-	cycleLinkWidth: 1.2,
-	nodeStrokeColor: 'rgba(255, 255, 255, 0.8)',
-	nodeLabelColor: '#333333',
-	panelBackground: 'rgba(255, 255, 255, 0.95)',
-	panelBorder: 'rgba(0, 0, 0, 0.1)',
+	hubRingColor: '#ffffff',
+	activeNodeColor: '#ffffff',
+	neighborNodeColor: '#ffff00',
+	linkColor: 'rgba(255, 255, 255, 0.45)', // Vivid mesh lines
+	activeLinkColor: 'rgba(255, 255, 255, 0.95)',
+	cycleLinkColor: 'rgba(255, 255, 255, 0.45)',
+	linkParticleColor: '#ffffff',
+	linkWidth: 0.8, // Visible lines
+	activeLinkWidth: 1.5,
+	cycleLinkWidth: 0.8,
+	nodeStrokeColor: 'rgba(0, 0, 0, 0.5)',
+	nodeLabelColor: '#ffffff',
+	panelBackground: 'rgba(0, 0, 0, 0.95)',
+	panelBorder: 'rgba(255, 255, 255, 0.1)',
 };
 
 const DEFAULT_VIEWPORT_CONFIG = {
