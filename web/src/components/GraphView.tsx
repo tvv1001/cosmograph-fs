@@ -23,6 +23,8 @@ import {
 	type GraphNode,
 } from '@/lib/graph-data';
 
+import { createFirmGeometry, createPersonGeometry } from '@/lib/geometry';
+
 // --- Constants & Config ---
 const CLICK_REVEAL_HOPS = 3;
 const CLICK_REVEAL_HIGHLIGHT_MS = 1100;
@@ -49,6 +51,7 @@ export default function GraphView() {
 	const [showLegend, setShowLegend] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(true);
 	const [panelPinned, setPanelPinned] = useState(true);
+	const [cameraDistance, setCameraDistance] = useState(2000);
 
 	const dragChildOffsetsRef = useRef<{ node: GraphNode & NodeObject; dx: number; dy: number; dz: number }[]>([]);
 
@@ -63,8 +66,23 @@ export default function GraphView() {
 	const highlightedNodeIds = useMemo(() => {
 		if (!activeNodeId) return new Set<string>();
 		if (traceMode && selectedNodeId) return expandSelection(dataset, selectedNodeId);
-		return new Set([activeNodeId, ...(dataset.adjacency.get(activeNodeId) ?? new Set())]);
+		return new Set([activeNodeId]);
 	}, [activeNodeId, dataset, selectedNodeId, traceMode]);
+
+	// Freeze the selected node and unfreeze others
+	useEffect(() => {
+		for (const node of visibleGraph.nodes as any[]) {
+			if (selectedNodeId === node.id) {
+				node.fx = node.x;
+				node.fy = node.y;
+				node.fz = node.z;
+			} else {
+				node.fx = undefined;
+				node.fy = undefined;
+				node.fz = undefined;
+			}
+		}
+	}, [selectedNodeId, visibleGraph.nodes]);
 
 	const highlightedLinkIds = useMemo(() => {
 		if (!activeNodeId) return new Set<string>();
@@ -73,7 +91,10 @@ export default function GraphView() {
 				.filter((link) => {
 					const source = getEndpointId(link.source);
 					const target = getEndpointId(link.target);
-					return highlightedNodeIds.has(source) && highlightedNodeIds.has(target) && (traceMode || source === activeNodeId || target === activeNodeId);
+					if (traceMode) {
+						return highlightedNodeIds.has(source) && highlightedNodeIds.has(target);
+					}
+					return source === activeNodeId || target === activeNodeId;
 				})
 				.map((link) => getLinkKey(link)),
 		);
@@ -88,9 +109,36 @@ export default function GraphView() {
 	useEffect(() => {
 		if (graphRef.current) {
 			const fg = graphRef.current;
-			fg.d3Force('charge')?.strength(-150); 
-			fg.d3Force('link')?.distance(60);
-			fg.d3Force('center')?.strength(0.05);
+
+			// Massive repulsion to space firms throughout the entire 3D volume
+			fg.d3Force('charge')?.strength((node: any) => {
+				return node.kind === 'firm' ? -8000 : -200;
+			}); 
+
+			// Large orbital clusters
+			fg.d3Force('link')?.distance((l: any) => {
+				const source = l.source as any;
+				const target = l.target as any;
+				// People stay in wide orbits around firms
+				if (source.kind === 'firm' || target.kind === 'firm') return 120;
+				return 300;
+			}).strength((l: any) => {
+				const source = l.source as any;
+				const target = l.target as any;
+				if (source.kind === 'firm' || target.kind === 'firm') return 0.5;
+				return 0.05;
+			});
+
+			// Large collision radius to prevent hub overlap and prevent nodes from bleeding into each other
+			fg.d3Force('collide', (d3 as any).forceCollide().radius((node: any) => {
+				// Base collision on the scaled size + some padding
+				const scaledSize = (node.size || 5) * 0.8;
+				return scaledSize + 5;
+			}));
+
+			// Use radial force instead of center to allow expansion but keep it contained
+			fg.d3Force('radial', (d3 as any).forceRadial(0, 0, 0).strength(0.005));
+			fg.d3Force('center', null);
 		}
 	}, [ForceGraph3D]);
 
@@ -417,32 +465,116 @@ export default function GraphView() {
 							ref={graphRef}
 							graphData={visibleGraph}
 							backgroundColor={dataset.visual.backgroundColor}
-							nodeRelSize={6}
+							nodeRelSize={2.5}
+							nodeVal={(node: any) => node.size || 5}
 							nodeColor={(node: any) => {
 								const isSelected = selectedNodeId === node.id;
 								const isRecently = recentlyRevealedNodeIds.has(node.id);
 								const isHighlighted = highlightedNodeIds.has(node.id);
 								const isVisited = visitedNodeIds.has(node.id);
-								
+
 								if (isSelected) return dataset.visual.activeNodeColor;
 								if (isRecently) return dataset.visual.activeLinkColor;
 								if (isHighlighted) return dataset.visual.neighborNodeColor;
 								if (isVisited) return node.kind === 'firm' ? '#b45309' : '#1e40af';
 								return (dataset.visual.nodeColors as any)[node.kind] || '#fff';
 							}}
+							nodeThreeObject={(node: any) => {
+								const size = (node.size || 5) * 0.5;
+								const isInactive = isNodeInactive(node);
+
+								const geometry = node.kind === 'firm' 
+									? createFirmGeometry(size)
+									: createPersonGeometry(size);
+
+								const isSelected = selectedNodeId === node.id;
+								const isRecently = recentlyRevealedNodeIds.has(node.id);
+								const isHighlighted = highlightedNodeIds.has(node.id);
+								const isVisited = visitedNodeIds.has(node.id);
+
+								let color = (dataset.visual.nodeColors as any)[node.kind] || '#fff';
+								if (isSelected) color = dataset.visual.activeNodeColor;
+								else if (isRecently) color = dataset.visual.activeLinkColor;
+								else if (isHighlighted) color = dataset.visual.neighborNodeColor;
+								else if (isVisited) color = node.kind === 'firm' ? '#b45309' : '#1e40af';
+
+								// Group to hold both the solid mesh and the wireframe edges
+								const group = new THREE.Group();
+
+								// 1. The Translucent Solid Core
+								const material = new THREE.MeshPhysicalMaterial({
+									color: color,
+									transparent: true,
+									opacity: isInactive ? 0.15 : 0.4, // Semi-transparent for vector look
+									roughness: 0.1,
+									transmission: 0.5,
+									thickness: 0.5,
+									emissive: color,
+									emissiveIntensity: 0.2, // Base glow
+									flatShading: true
+								});
+
+								if (node.hasDisclosure) {
+									material.emissive = new THREE.Color('#ff0000');
+									material.emissiveIntensity = 0.8;
+								}
+								
+								const mesh = new THREE.Mesh(geometry, material);
+								group.add(mesh);
+
+								// 2. The Glowing Vector Edges
+								const edges = new THREE.EdgesGeometry(geometry);
+								const edgeMaterial = new THREE.LineBasicMaterial({
+									color: color,
+									linewidth: 2,
+									transparent: true,
+									opacity: isInactive ? 0.3 : 1.0
+								});
+								
+								// If it has a disclosure, make the edges glow red too
+								if (node.hasDisclosure) {
+									edgeMaterial.color = new THREE.Color('#ff0000');
+								}
+
+								const line = new THREE.LineSegments(edges, edgeMaterial);
+								group.add(line);
+
+								return group;
+							}}
 							nodeLabel="label"
-							linkWidth={(link: any) => highlightedLinkIds.has(getLinkKey(link)) ? 2.5 : 1.0}
+							linkWidth={(link: any) => {
+								if (highlightedLinkIds.has(getLinkKey(link))) return 2.5;
+								// Thicker when zoomed out, ultra-thin (1px relative) when zoomed in
+								return cameraDistance > 1000 ? 1.0 : 0.2;
+							}}
 							linkColor={(link: any) => {
 								if (highlightedLinkIds.has(getLinkKey(link))) return 'rgba(255, 255, 255, 0.9)';
+
+								// More opaque when zoomed in, more transparent when zoomed out
+								const opacityMult = cameraDistance > 1000 ? 1.0 : 2.5;
+
 								switch (link.relationship) {
-									case 'employment': return 'rgba(0, 210, 255, 0.85)'; // Brighter Neon Blue
-									case 'disclosure': return 'rgba(255, 255, 255, 0.35)'; // Faint Gray
-									case 'control': return '#f44336'; // Vivid Red
-									default: return 'rgba(255, 255, 255, 0.2)';
+									case 'employment': return `rgba(33, 150, 243, ${Math.min(1, 0.35 * opacityMult)})`; // Vivid Blue
+									case 'disclosure': return `rgba(255, 255, 255, ${Math.min(1, 0.2 * opacityMult)})`; // Faint Gray
+									case 'control': return `rgba(244, 67, 54, ${Math.min(1, 0.5 * opacityMult)})`; // Vivid Red
+									default: return `rgba(255, 255, 255, ${Math.min(1, 0.15 * opacityMult)})`;
 								}
 							}}
 							linkDirectionalArrowLength={(link: any) => link.relationship === 'control' ? 8 : 0}
 							linkDirectionalArrowRelPos={1}
+							onEngineTick={() => {
+								if (graphRef.current) {
+									const cam = graphRef.current.camera() as THREE.PerspectiveCamera;
+									if (cam) {
+										// Using length() of camera position as a proxy for zoom distance from origin
+										const dist = cam.position.length();
+										// Only update state if change is significant to avoid thrashing
+										if (Math.abs(dist - cameraDistance) > 100) {
+											setCameraDistance(dist);
+										}
+									}
+								}
+							}}
 							onNodeClick={handleNodeClick}
 							onNodeHover={(node: any) => setHoveredNodeId(node?.id || null)}
 							onBackgroundClick={handleBackgroundClick}

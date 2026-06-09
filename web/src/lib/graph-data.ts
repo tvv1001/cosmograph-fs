@@ -1116,14 +1116,16 @@ function connectEmployment(links: GraphLink[], linkKeys: Set<string>, degreeCoun
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNodeKind): number {
 	const connectionCount = Math.max(0, degreeHint);
-	// Increase exponent and base multiplier for more dramatic scaling
-	const degreeScale = Math.pow(connectionCount, 0.75) * 4;
-
+	
 	if (kind === 'firm') {
-		return Math.min(80, (15 + degreeScale + (isHub ? 5 : 0)) * 1.2);
+		// Firm sizing (increased by an additional 40%)
+		const degreeScale = Math.pow(connectionCount, 0.35) * 2.35;
+		return 9.45 + degreeScale + (isHub ? 2.35 : 0);
 	}
 
-	return Math.min(60, (10 + degreeScale + (isHub ? 2 : 0)) * 1.2);
+	// People: larger base size and more aggressive scaling
+	const degreeScale = Math.pow(connectionCount, 0.7) * 2.5;
+	return 15 + degreeScale;
 }
 
 function scoreSearchMatch(haystack: string, needle: string): number {

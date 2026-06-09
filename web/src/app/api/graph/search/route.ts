@@ -42,14 +42,16 @@ function getCanonicalNodeId(namespace: string, type: 'individual' | 'firm', fall
 
 function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNode['kind']): number {
 	const connectionCount = Math.max(0, degreeHint);
-	// Increase exponent and base multiplier for more dramatic scaling
-	const degreeScale = Math.pow(connectionCount, 0.75) * 4;
 
 	if (kind === 'firm') {
-		return Math.min(80, (15 + degreeScale + (isHub ? 5 : 0)) * 1.2);
+		// Firm sizing (increased by an additional 40%)
+		const degreeScale = Math.pow(connectionCount, 0.35) * 2.35;
+		return 9.45 + degreeScale + (isHub ? 2.35 : 0);
 	}
 
-	return Math.min(60, (10 + degreeScale + (isHub ? 2 : 0)) * 1.2);
+	// People: larger base size and more aggressive scaling
+	const degreeScale = Math.pow(connectionCount, 0.7) * 2.5;
+	return 15 + degreeScale;
 }
 
 function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
@@ -472,26 +474,12 @@ export async function GET(request: Request) {
 	const visibleNodeIds = new Set<string>();
 
 	for (const match of matches.slice(0, 20)) {
-		// For firms, limit to direct individuals with 'employment' or 'control' relationship.
-		if (match.kind === 'firm') {
-			for (const link of links) {
-				const source = getEndpointId(link.source);
-				const target = getEndpointId(link.target);
-				if (source === match.id || target === match.id) {
-					const other = source === match.id ? target : source;
-					const otherNode = nodeById.get(other);
-					if (otherNode && otherNode.kind === 'individual' && (link.relationship === 'employment' || link.relationship === 'control')) {
-						visibleNodeIds.add(other);
-					}
-				}
-			}
-			// Always include the firm itself
-			visibleNodeIds.add(match.id);
-			continue;
-		}
-
-		// For individuals and other node kinds, include direct neighbors
-		for (const neighborId of getDirectNeighborSelection(adjacency, match.id)) {
+		// Include the match itself
+		visibleNodeIds.add(match.id);
+		
+		// Always include direct neighbors for any match to reveal the cluster
+		const neighbors = adjacency.get(match.id) ?? new Set();
+		for (const neighborId of neighbors) {
 			visibleNodeIds.add(neighborId);
 		}
 	}
