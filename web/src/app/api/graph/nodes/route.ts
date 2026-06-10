@@ -9,6 +9,11 @@ const __dirname = path.dirname(__filename);
 const RAW_DATA_DIR = path.join(__dirname, '../../../../../../data/raw');
 const DEFAULT_NAMESPACE = 'finra';
 
+type RawRecord = Record<string, unknown>;
+function asRecord(v: unknown): RawRecord {
+	return v !== null && typeof v === 'object' ? (v as RawRecord) : {};
+}
+
 function getEndpointId(endpoint: string | GraphNode): string {
 	return typeof endpoint === 'string' ? endpoint : endpoint.id;
 }
@@ -48,15 +53,16 @@ function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNode['kind']
 	return 15 + degreeScale;
 }
 
-function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
-	const data = content.content ?? content;
-	const crd = String(data.basicInformation?.crd ?? data.basicInformation?.firmId ?? fallbackId);
-	const firmId = data.basicInformation?.firmId ?? fallbackId;
+function createFirmNodeFromRaw(content: RawRecord, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
+	const data = asRecord(content.content ?? content);
+	const bi = asRecord(data.basicInformation);
+	const crd = String(bi.crd ?? bi.firmId ?? fallbackId);
+	const firmId = bi.firmId ?? fallbackId;
 	const id = getCanonicalNodeId(namespace, 'firm', fallbackId || crd);
-	const name = data.basicInformation?.firmName ?? data.basicInformation?.name ?? `Firm ${firmId}`;
-	const sec = String(data.basicInformation?.bdSECNumber ?? data.basicInformation?.sec ?? '');
-	const active = String(data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope ?? '').toLowerCase() === 'active';
-	const summary = data.basicInformation?.firmName ? `Firm profile for ${name}` : 'Firm profile loaded from raw data.';
+	const name = String(bi.firmName ?? bi.name ?? `Firm ${firmId}`);
+	const sec = String(bi.bdSECNumber ?? bi.sec ?? '');
+	const active = String(bi.firmBCScope ?? bi.bcScope ?? '').toLowerCase() === 'active';
+	const summary = bi.firmName ? `Firm profile for ${name}` : 'Firm profile loaded from raw data.';
 
 	return {
 		id,
@@ -71,23 +77,23 @@ function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = get
 		badges: [{ label: active ? 'Active' : 'Inactive', tone: active ? 'success' : 'neutral' }],
 		marker: 'B',
 		summary,
-		subtitle: data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope,
-		searchText: normalizeText(`${id} ${name} ${crd} ${sec} ${data.basicInformation?.firmBCScope ?? ''}`),
+		subtitle: String(bi.firmBCScope ?? bi.bcScope ?? ''),
+		searchText: normalizeText(`${id} ${name} ${crd} ${sec} ${String(bi.firmBCScope ?? '')}`),
 		externalLinks: [],
 		detailSections: [],
 	} as GraphNode;
 }
 
-function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
-	const data = content.content ?? content;
-	const basic = data.basicInformation ?? {};
+function createPersonNodeFromRaw(content: RawRecord, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
+	const data = asRecord(content.content ?? content);
+	const basic = asRecord(data.basicInformation);
 	const crd = String(basic.crd ?? basic.individualId ?? fallbackId);
 	const individualId = basic.individualId ?? fallbackId;
-	const firstName = basic.firstName ?? '';
-	const middleName = basic.middleName ?? '';
-	const lastName = basic.lastName ?? '';
+	const firstName = String(basic.firstName ?? '');
+	const middleName = String(basic.middleName ?? '');
+	const lastName = String(basic.lastName ?? '');
 	const name = [firstName, middleName, lastName].filter(Boolean).join(' ').trim() || `Person ${individualId}`;
-	const otherNames = Array.isArray(basic.otherNames) ? basic.otherNames.map(String) : [];
+	const otherNames = Array.isArray(basic.otherNames) ? (basic.otherNames as unknown[]).map(String) : [];
 	const active = String(basic.bcScope ?? '').toLowerCase() === 'active';
 	const summary = `Individual profile for ${name}`;
 	const id = getCanonicalNodeId(namespace, 'individual', fallbackId || crd);
@@ -211,7 +217,7 @@ export async function GET(request: Request) {
 		.split(',')
 		.map((s) => s.trim())
 		.filter(Boolean);
-	const { nodes, links, nodeById } = getGraphData();
+	const { nodes, links } = getGraphData();
 
 	if (requested.length === 0) {
 		return NextResponse.json({ visibleNodes: [], visibleLinks: [], visibleNodeIds: [] });

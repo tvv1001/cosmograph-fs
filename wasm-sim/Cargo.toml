@@ -10,7 +10,4 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "=0.2.105"
 js-sys = "=0.3.82"
 fjadra = "0.2"
-petgraph = { version = "0.6", features = ["serde-1"] }
-serde = { version = "1.0", features = ["derive"] }
-serde-wasm-bindgen = "0.6"
 getrandom = { version = "0.2", features = ["js"] }

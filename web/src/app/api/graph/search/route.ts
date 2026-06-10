@@ -15,6 +15,11 @@ const STARTUP_SEED_PEOPLE_COUNT = 7;
 const STARTUP_SEED_FIRM_COUNT = 4;
 const DEFAULT_NAMESPACE = 'finra';
 
+type RawRecord = Record<string, unknown>;
+function asRecord(v: unknown): RawRecord {
+	return v !== null && typeof v === 'object' ? (v as RawRecord) : {};
+}
+
 function getEndpointId(endpoint: string | GraphNode): string {
 	return typeof endpoint === 'string' ? endpoint : endpoint.id;
 }
@@ -54,15 +59,16 @@ function getNodeSize(degreeHint: number, isHub: boolean, kind: GraphNode['kind']
 	return 15 + degreeScale;
 }
 
-function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
-	const data = content.content ?? content;
-	const crd = String(data.basicInformation?.crd ?? data.basicInformation?.firmId ?? fallbackId);
-	const firmId = data.basicInformation?.firmId ?? fallbackId;
+function createFirmNodeFromRaw(content: RawRecord, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
+	const data = asRecord(content.content ?? content);
+	const bi = asRecord(data.basicInformation);
+	const crd = String(bi.crd ?? bi.firmId ?? fallbackId);
+	const firmId = bi.firmId ?? fallbackId;
 	const id = getCanonicalNodeId(namespace, 'firm', fallbackId || crd);
-	const name = data.basicInformation?.firmName ?? data.basicInformation?.name ?? `Firm ${firmId}`;
-	const sec = String(data.basicInformation?.bdSECNumber ?? data.basicInformation?.sec ?? '');
-	const active = String(data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope ?? '').toLowerCase() === 'active';
-	const summary = data.basicInformation?.firmName ? `Firm profile for ${name}` : 'Firm profile loaded from raw data.';
+	const name = String(bi.firmName ?? bi.name ?? `Firm ${firmId}`);
+	const sec = String(bi.bdSECNumber ?? bi.sec ?? '');
+	const active = String(bi.firmBCScope ?? bi.bcScope ?? '').toLowerCase() === 'active';
+	const summary = bi.firmName ? `Firm profile for ${name}` : 'Firm profile loaded from raw data.';
 
 	return {
 		id,
@@ -77,8 +83,8 @@ function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = get
 		badges: [{ label: active ? 'Active' : 'Inactive', tone: active ? 'success' : 'neutral' }],
 		marker: 'B',
 		summary,
-		subtitle: data.basicInformation?.firmBCScope ?? data.basicInformation?.bcScope,
-		searchText: normalizeText(`${id} ${name} ${crd} ${sec} ${data.basicInformation?.firmBCScope ?? ''}`),
+		subtitle: String(bi.firmBCScope ?? bi.bcScope ?? ''),
+		searchText: normalizeText(`${id} ${name} ${crd} ${sec} ${String(bi.firmBCScope ?? '')}`),
 		externalLinks: [],
 		detailSections: [
 			{
@@ -92,16 +98,16 @@ function createFirmNodeFromRaw(content: any, fallbackId: string, namespace = get
 	};
 }
 
-function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
-	const data = content.content ?? content;
-	const basic = data.basicInformation ?? {};
+function createPersonNodeFromRaw(content: RawRecord, fallbackId: string, namespace = getNodeNamespace(fallbackId)): GraphNode {
+	const data = asRecord(content.content ?? content);
+	const basic = asRecord(data.basicInformation);
 	const crd = String(basic.crd ?? basic.individualId ?? fallbackId);
 	const individualId = basic.individualId ?? fallbackId;
-	const firstName = basic.firstName ?? '';
-	const middleName = basic.middleName ?? '';
-	const lastName = basic.lastName ?? '';
+	const firstName = String(basic.firstName ?? '');
+	const middleName = String(basic.middleName ?? '');
+	const lastName = String(basic.lastName ?? '');
 	const name = [firstName, middleName, lastName].filter(Boolean).join(' ').trim() || `Person ${individualId}`;
-	const otherNames = Array.isArray(basic.otherNames) ? basic.otherNames.map(String) : [];
+	const otherNames = Array.isArray(basic.otherNames) ? (basic.otherNames as unknown[]).map(String) : [];
 	const active = String(basic.bcScope ?? '').toLowerCase() === 'active';
 	const summary = `Individual profile for ${name}`;
 	const id = getCanonicalNodeId(namespace, 'individual', fallbackId || crd);
@@ -119,7 +125,7 @@ function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = g
 		badges: [{ label: active ? 'Active' : 'Inactive', tone: active ? 'success' : 'neutral' }],
 		marker: 'I',
 		summary,
-		subtitle: basic.bcScope ? `${basic.bcScope} individual` : undefined,
+		subtitle: basic.bcScope ? `${String(basic.bcScope)} individual` : undefined,
 		individualId: Number(individualId),
 		firstName,
 		middleName,
@@ -133,7 +139,7 @@ function createPersonNodeFromRaw(content: any, fallbackId: string, namespace = g
 				items: [
 					{ label: 'Individual ID', value: String(individualId) },
 					{ label: 'CRD', value: crd },
-					{ label: 'Status', value: basic.bcScope ?? 'Unknown' },
+					{ label: 'Status', value: String(basic.bcScope ?? 'Unknown') },
 				],
 			},
 		],
@@ -353,24 +359,6 @@ function isSearchMatch(node: GraphNode, normalizedQuery: string): boolean {
 	return queryTokens.every((queryToken) => searchTokens.some((searchToken) => searchToken.includes(queryToken) || levenshteinDistance(searchToken, queryToken) <= threshold));
 }
 
-function expandSelection(adjacency: Map<string, Set<string>>, nodeById: Map<string, GraphNode>, nodeId: string): Set<string> {
-	const visibleNodeIds = new Set<string>([nodeId]);
-	const selectedNode = nodeById.get(nodeId);
-	if (!selectedNode) return visibleNodeIds;
-
-	const directNeighbors = adjacency.get(nodeId) ?? new Set<string>();
-	for (const neighborId of directNeighbors) visibleNodeIds.add(neighborId);
-
-	if (selectedNode.kind === 'individual') {
-		for (const neighborId of directNeighbors) {
-			const neighborNode = nodeById.get(neighborId);
-			if (neighborNode?.kind !== 'firm') continue;
-			for (const secondDegreeId of adjacency.get(neighborId) ?? []) visibleNodeIds.add(secondDegreeId);
-		}
-	}
-
-	return visibleNodeIds;
-}
 
 function getGraphData() {
 	if (!cache.graphData) {

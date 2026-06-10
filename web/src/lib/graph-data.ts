@@ -1,3 +1,5 @@
+import Graph from 'graphology';
+
 export type GraphNodeKind = 'firm' | 'individual';
 
 export type RelationshipKind = 'employment' | 'control' | 'peer' | 'disclosure';
@@ -57,6 +59,8 @@ export interface GraphNode {
 	fx?: number;
 	fy?: number;
 	fz?: number;
+	fixed?: boolean;
+	hasDisclosure?: boolean;
 }
 
 export interface GraphLink {
@@ -67,22 +71,23 @@ export interface GraphLink {
 }
 
 export interface ForceLayoutConfig {
-	chargeStrength: number;
-	linkDistance: number;
-	linkStrength: number;
-	velocityDecay: number;
-	alphaDecay: number;
-	alphaMin: number;
-	warmupTicks: number;
-	cooldownTicks: number;
-	collisionPadding: number;
-	hubGravityStrength: number;
-	neighborhoodSpread: number;
+	// ForceAtlas2 settings (graphology-layout-forceatlas2)
+	scalingRatio: number;
+	gravity: number;
+	slowDown: number;
+	linLogMode: boolean;
+	outboundAttractionDistribution: boolean;
+	adjustSizes: boolean;
+	edgeWeightInfluence: number;
+	barnesHutOptimize: boolean;
+	barnesHutTheta: number;
+	strongGravityMode: boolean;
+	// Viewport helpers
 	focusZoom: number;
-	reheatOnSelect: boolean;
 }
 
 export interface GraphDataset {
+	graph: Graph;
 	graphData: {
 		nodes: GraphNode[];
 		links: GraphLink[];
@@ -131,20 +136,17 @@ export interface SearchRevealResult {
 const INITIAL_FIRM_ID = 'firm-15621';
 
 const DEFAULT_FORCE_CONFIG: ForceLayoutConfig = {
-	// Spread nodes out further (~220% of original reference)
-	chargeStrength: -1500,
-	linkDistance: 800,
-	linkStrength: 0.12,
-	velocityDecay: 0.4,
-	alphaDecay: 0.0228,
-	alphaMin: 0.001,
-	warmupTicks: 100,
-	cooldownTicks: 400,
-	collisionPadding: 45,
-	hubGravityStrength: 0.02,
-	neighborhoodSpread: 450,
+	scalingRatio: 20,  // strong repulsion → wide spread
+	gravity: 0.25,     // gentle pull to center → nodes don't collapse inward
+	slowDown: 20,      // slow FA2 convergence → fluid drifting motion
+	linLogMode: false,
+	outboundAttractionDistribution: false,
+	adjustSizes: true,
+	edgeWeightInfluence: 0,
+	barnesHutOptimize: false,
+	barnesHutTheta: 0.5,
+	strongGravityMode: false,
 	focusZoom: 2.5,
-	reheatOnSelect: true,
 };
 
 const DEFAULT_VISUAL_CONFIG = {
@@ -281,7 +283,31 @@ export function createGraphDataset(): GraphDataset {
 
 	const graphData = { nodes, links };
 	const adjacency = createAdjacencyMap(links);
+
+	// Build Graphology graph with FA2-ready initial positions
+	const graph = new Graph({ multi: false, type: 'undirected', allowSelfLoops: false });
+	const spread = 3000;
+	for (const node of nodes) {
+		// FA2 adjustSizes uses `size` as the pixel radius — must match react-force-graph's formula.
+		// Visual radius = sqrt(nodeVal × NODE_REL_SIZE) where NODE_REL_SIZE = 100.
+		const visualRadius = Math.sqrt((node.size ?? 5) * 100) + 6;
+		graph.addNode(node.id, {
+			...node,
+			size: visualRadius,
+			x: (Math.random() - 0.5) * spread,
+			y: (Math.random() - 0.5) * spread,
+		});
+	}
+	for (const link of links) {
+		const src = getEndpointId(link.source);
+		const tgt = getEndpointId(link.target);
+		if (src !== tgt && graph.hasNode(src) && graph.hasNode(tgt) && !graph.hasEdge(src, tgt)) {
+			graph.addEdge(src, tgt, link);
+		}
+	}
+
 	const dataset: GraphDataset = {
+		graph,
 		graphData,
 		adjacency,
 		linksByNodeId: createLinksByNodeId(links),

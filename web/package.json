@@ -10,20 +10,18 @@
 		"lint": "eslint"
 	},
 	"dependencies": {
-		"d3-force-3d": "^3.0.6",
+		"graphology": "^0.25.4",
+		"graphology-layout-forceatlas2": "^0.10.1",
 		"next": "16.2.6",
 		"react": "19.2.4",
 		"react-dom": "19.2.4",
-		"react-force-graph-2d": "^1.29.1",
-		"react-force-graph-3d": "^1.29.1",
-		"three": "^0.184.0"
+		"react-force-graph-2d": "^1.29.1"
 	},
 	"devDependencies": {
 		"@tailwindcss/postcss": "^4",
 		"@types/node": "^20",
 		"@types/react": "^19",
 		"@types/react-dom": "^19",
-		"@types/three": "^0.184.1",
 		"eslint": "^9",
 		"eslint-config-next": "16.2.6",
 		"tailwindcss": "^4",
